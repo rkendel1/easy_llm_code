@@ -16,7 +16,7 @@ describe("FeltDB runtime and dependency contract", () => {
   it("uses the exact providers and remains private", async () => {
     const manifest = JSON.parse(await readFile(resolve(process.cwd(), "package.json"), "utf8"));
     expect(manifest.private).toBe(true);
-    expect(manifest.dependencies).toEqual({ "@easy-llm/code-ide": "0.1.0", "@easy-llm/llm": "0.1.7", "@feltdb/core": "0.2.0" });
+    expect(manifest.dependencies).toEqual({ "@easy-llm/code-ide": "0.1.0", "@easy-llm/llm": "^0.10.0", "@feltdb/core": "0.2.0" });
   });
 
   it("reports explicit ephemeral memory as a degraded non-persistent mode", async () => {

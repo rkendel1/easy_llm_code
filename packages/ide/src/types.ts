@@ -16,6 +16,8 @@ export interface TaskCreateInput { request: string; workspace: WorkspaceContext;
 export interface RuntimeCapabilities { protocolVersion: string; transports: string[]; operations: string[]; runtimeEvents: boolean; sandboxInspection: boolean; diagnostics: boolean }
 export interface RuntimeTask { id: string; request: string; state: string; createdAt: string; result?: unknown; approval?: ApprovalRequest }
 export interface SandboxView { sandbox: unknown; commands: unknown[]; processes: unknown[]; filesystemChanges: unknown[]; network: unknown[]; snapshots: unknown[]; events: unknown[] }
+export interface WorkspaceRuntimeStatus { state: "ready" | "attention-required"; project: { id: string; name: string; indexed: boolean }; memory: unknown; ai: unknown; sandbox: { enabled: boolean; network: string }; ide: { selected?: string; detected: string[]; connected: boolean }; recentTasks: Array<{ id: string; request: string; status: string; createdAt: string }>; interruptedTask?: { id: string; request: string; status: string } }
+export interface ProjectIntelligenceView { files: number; symbols: number; commits: number; tasks: number; patterns: number; failures: number; generation: number; lastIndexedAt?: string }
 export interface IDEIntegration {
   readonly id: string; readonly name: string; readonly capabilities: IDECapabilities;
   detect(): Promise<DetectionResult>; connect(): Promise<IDEConnection>; disconnect(): Promise<void>;

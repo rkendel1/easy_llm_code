@@ -14,6 +14,7 @@ export const indexProjectIntoMemory = async (
   project: Project,
   memory: ProjectMemory
 ): Promise<IndexResult> => {
+  return memory.batch(async () => {
   const files = await discoverFiles(root);
 
   for (const file of files) {
@@ -43,4 +44,5 @@ export const indexProjectIntoMemory = async (
     symbols,
     relationships: edges
   };
+  });
 };

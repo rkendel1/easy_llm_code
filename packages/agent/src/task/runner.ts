@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { llm as routedLlm } from "@easy-llm/llm";
 import type { ModelDefinition } from "@easy-llm/llm";
+import { invokeModel } from "../model/llm-cx.js";
 import { createContextEngine } from "../context/build-context.js";
 import type { IntelligentContextBundle } from "../context/types.js";
 import { applyValidatedMutation, restoreSnapshot } from "../mutation/apply.js";
@@ -22,7 +22,7 @@ import { createTaskProfile, type TaskProfile } from "../intelligence/task-profil
 import { buildMemoryRecommendations } from "../intelligence/recommendations.js";
 import { rankSuccessfulPatterns } from "../memory/successful-patterns.js";
 import { rankFailurePatterns } from "../memory/failure-patterns.js";
-import { selectModel } from "../routing/model-selector.js";
+import { selectRuntimeModel } from "../routing/cx-selector.js";
 import type { RoutingDecision } from "../routing/decision.js";
 import { executeWithModelFallback } from "../routing/fallback.js";
 import { createChangeIntelligence } from "../change-intelligence/analyze-impact.js";
@@ -46,7 +46,8 @@ export interface TaskRunnerOptions {
   policy?: Partial<TaskPolicy>; approval?: ApprovalHandler;
   routing?: { budget?: number; model?: string; models?: ModelDefinition[] };
   autonomy?: { mode?: AutonomyMode; budget?: Partial<AutonomousBudget> };
-  sandbox?: { manager?: SandboxManager; policy?: Partial<SandboxPolicy>; limits?: Partial<ResourceLimits> };
+  sandbox?: { enabled?: boolean; manager?: SandboxManager; policy?: Partial<SandboxPolicy>; limits?: Partial<ResourceLimits> };
+  verification?: { enabled?: boolean };
 }
 
 export const createTaskRunner = (options: TaskRunnerOptions) => {
@@ -91,7 +92,7 @@ export const createTaskRunner = (options: TaskRunnerOptions) => {
     return save(taskId, next, fields.attempt ?? checkpoint.attempt, { ...checkpoint, ...fields, resumeState: next === "paused" ? fields.resumeState : undefined });
   };
   const ensureSandbox = async (taskId: string, mode: TaskMode, checkpoint: TaskCheckpoint): Promise<TaskCheckpoint> => {
-    if (mode !== "edit" && mode !== "auto") return checkpoint;
+    if ((mode !== "edit" && mode !== "auto") || options.sandbox?.enabled === false) return checkpoint;
     if (checkpoint.sandboxId) {
       activeSandbox = await options.memory.getSandbox(checkpoint.sandboxId);
       if (!activeSandbox) throw new Error(`SANDBOX_NOT_FOUND: ${checkpoint.sandboxId}`);
@@ -173,7 +174,7 @@ export const createTaskRunner = (options: TaskRunnerOptions) => {
         if (activeExecution && activeUsage.verificationTimeMs >= activeExecution.budget.maxVerificationTimeMs) return pauseForBudget(["verificationTimeMs"]);
         for (const step of proposal.verification) await emit(args.taskId, { type: "verification.started", command: step.command });
         const canonicalProject = await options.memory.getProject(), verificationProject = activeSandbox ? { ...canonicalProject, root: executionRoot } : canonicalProject;
-        const layered = await runLayeredVerification(verificationProject, args.taskId, proposal.id, proposal.verification, policy.execution, { risk: activeRisk?.level, executor: verificationExecutor() }), verification = layered.final;
+        const layered = options.verification?.enabled === false ? (() => { const timestamp = new Date().toISOString(), run: VerificationRun = { id: `verification:${args.taskId}:disabled`, taskId: args.taskId, proposalId: proposal.id, results: [], passed: true, startedAt: timestamp, completedAt: timestamp, verificationScope: "syntax", verificationReason: "disabled by project configuration" }; return { runs: [run], escalations: [], final: run }; })() : await runLayeredVerification(verificationProject, args.taskId, proposal.id, proposal.verification, policy.execution, { risk: activeRisk?.level, executor: verificationExecutor() }), verification = layered.final;
         for (const run of layered.runs) await options.memory.persistVerificationRun(run); for (const escalation of layered.escalations) await emit(args.taskId, { type: "verification.escalated", ...escalation });
         if (activeExecution) { activeUsage = { ...activeUsage, verificationTimeMs: activeUsage.verificationTimeMs + layered.runs.flatMap((run) => run.results).reduce((sum, item) => sum + item.durationMs, 0), wallClockMs: Date.now() - Date.parse(activeExecution.startedAt) }; activeExecution = await autonomousController.update(activeExecution, activeUsage); }
         await emit(args.taskId, { type: "verification.completed", success: verification.passed });
@@ -218,7 +219,7 @@ export const createTaskRunner = (options: TaskRunnerOptions) => {
               if (activeUsage.replans >= activeExecution.budget.maxReplans || activeUsage.iterations >= activeExecution.budget.maxIterations) return pauseForBudget([activeUsage.replans >= activeExecution.budget.maxReplans ? "replans" : "iterations"]);
               activeUsage = { ...activeUsage, replans: activeUsage.replans + 1, iterations: activeUsage.iterations + 1 }; activeExecution = await autonomousController.update(activeExecution, activeUsage); activeReviewFailure = false; activeImpactExpanded = false;
               checkpoint = await setState(args.taskId, args.request, args.createdAt, checkpoint, "replanning", { iteration: activeUsage.iterations, budgetUsage: activeUsage, impactPredictionId: activeImpact?.id, riskAssessment: activeRisk }); await emit(args.taskId, { type: "execution.iteration.started", iteration: activeUsage.iterations }); await emit(args.taskId, { type: "routing.reconsidered", iteration: activeUsage.iterations });
-              if (activeDecision) { const previous = activeDecision.selectedModel, updatedProfile = { ...activeProfile, expectedFiles: refreshedTargets.length, contextSize: context.estimatedTokens, estimatedComplexity: refreshedTargets.length >= 8 ? "high" as const : activeProfile.estimatedComplexity }; activeProfile = updatedProfile; activeDecision = await selectModel(options.memory, { taskId: args.taskId, profile: updatedProfile, ...options.routing, models: options.routing?.models ?? (injectedModel ? [injectedModel] : undefined), iteration: activeUsage.iterations }); if (previous !== activeDecision.selectedModel) await emit(args.taskId, { type: "model.switched", from: previous, to: activeDecision.selectedModel, reason: "routing reconsidered after plan-level evidence" }); }
+              if (activeDecision) { const previous = activeDecision.selectedModel, updatedProfile = { ...activeProfile, expectedFiles: refreshedTargets.length, contextSize: context.estimatedTokens, estimatedComplexity: refreshedTargets.length >= 8 ? "high" as const : activeProfile.estimatedComplexity }; activeProfile = updatedProfile; activeDecision = await selectRuntimeModel(options.memory, { taskId: args.taskId, request: args.request, profile: updatedProfile, ...options.routing, models: options.routing?.models ?? (injectedModel ? [injectedModel] : undefined), iteration: activeUsage.iterations }); if (previous !== activeDecision.selectedModel) await emit(args.taskId, { type: "model.switched", from: previous, to: activeDecision.selectedModel, reason: "routing reconsidered after plan-level evidence" }); }
               const recommendations = buildMemoryRecommendations(rankSuccessfulPatterns(await options.memory.listSuccessfulPatterns(), { taskType: activeProfile.taskType, subsystem: activeProfile.subsystem }), rankFailurePatterns(await options.memory.listFailurePatterns(), { taskType: activeProfile.taskType, subsystem: activeProfile.subsystem }));
               const replanned = activeDecision ? (await executeWithModelFallback(options.memory, activeDecision, (candidate) => planner.plan(`${args.request}\nReplan from execution evidence: ${failureEvidence.join("\n")}`, { taskId: args.taskId, context, createdAt: args.createdAt, model: candidate.model, historicalMemory: recommendations.prompt, impactAssessment: activeImpact?.assessment }))).value : await planner.plan(args.request, { taskId: args.taskId, context, createdAt: args.createdAt, impactAssessment: activeImpact?.assessment }); plan = replanned.plan; activePlan = plan; proposal = activeDecision ? (await executeWithModelFallback(options.memory, activeDecision, (candidate) => mutationPlanner.propose(plan, context!, undefined, candidate.model))).value : await mutationPlanner.propose(plan, context); activeProposal = proposal;
               checkpoint = await setState(args.taskId, args.request, args.createdAt, checkpoint, "awaiting_approval", { planId: plan.id, proposalId: proposal.id }); await emit(args.taskId, { type: "execution.replanned", planId: plan.id, iteration: activeUsage.iterations });
@@ -254,11 +255,11 @@ export const createTaskRunner = (options: TaskRunnerOptions) => {
       const impact = await changeIntelligence.analyzeChangeImpact({ files: impactTargets, taskType: activeProfile.taskType, taskId, persist: true }); activeImpact = impact;
       checkpoint = await save(taskId, checkpoint.state, checkpoint.attempt, { ...checkpoint, impactPredictionId: impact.id });
       await emit(taskId, { type: "impact.completed", predictionId: impact.id, affectedFiles: impact.affectedFiles.length, affectedTests: impact.affectedTests.length, confidence: impact.confidence });
-      activeDecision = await selectModel(options.memory, { taskId, profile: activeProfile, ...options.routing, models: options.routing?.models ?? (injectedModel ? [injectedModel] : undefined) });
+      activeDecision = await selectRuntimeModel(options.memory, { taskId, request, profile: activeProfile, ...options.routing, models: options.routing?.models ?? (injectedModel ? [injectedModel] : undefined) });
       checkpoint = await save(taskId, checkpoint.state, checkpoint.attempt, { ...checkpoint, routingDecisionId: activeDecision.id });
-      await emit(taskId, { type: "routing.completed", model: activeDecision.selectedModel, provider: activeDecision.selectedProvider, score: activeDecision.score, confidence: activeDecision.reason.confidence.level });
+      await emit(taskId, { type: "routing.completed", model: activeDecision.selectedModel, provider: activeDecision.selectedProvider, score: activeDecision.score, confidence: activeDecision.reason.confidence.level, reason: activeDecision.reason.summary, evidenceCount: activeDecision.reason.confidence.evidenceCount });
       if (mode === "ask") {
-        const answer = (await executeWithModelFallback(options.memory, activeDecision, (candidate) => options.askLlm ? options.askLlm({ request, context, model: candidate.model }) : routedLlm({ task: "analysis", model: candidate.model, messages: [{ role: "user", content: `${request}\n\nContext: ${JSON.stringify(context)}` }] } as never))).value;
+        const answer = (await executeWithModelFallback(options.memory, activeDecision, (candidate) => options.askLlm ? options.askLlm({ request, context, model: candidate.model }) : invokeModel(`${request}\n\nContext: ${JSON.stringify(context)}`, { model: candidate.model }))).value;
         await options.memory.recordObservation({ type: "agent_analysis", taskId, content: answer, timestamp: new Date().toISOString(), relatedFiles: context.files.map((file) => file.id) });
         const result = await complete(taskId, request, createdAt, checkpoint, { status: "success", attempts: 0, filesChanged: 0, linesChanged: 0, testsPassed: 0, testsFailed: 0, verificationPassed: true, durationMs: Date.now() - Date.parse(createdAt) }); return { ...result, context, answer };
       }

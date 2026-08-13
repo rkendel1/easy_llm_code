@@ -1,4 +1,4 @@
-import type { IDECapabilities, IDEProtocolEvent, RuntimeCapabilities, RuntimeTask, SandboxView, TaskCreateInput, TaskDiff, Unsubscribe } from "./types.js";
+import type { IDECapabilities, IDEProtocolEvent, ProjectIntelligenceView, RuntimeCapabilities, RuntimeTask, SandboxView, TaskCreateInput, TaskDiff, Unsubscribe, WorkspaceRuntimeStatus } from "./types.js";
 import { LocalHTTPRuntimeTransport, type RuntimeTransport } from "./transport.js";
 
 export interface RuntimeClientOptions { baseUrl?: string; token?: string; fetch?: typeof globalThis.fetch; pollIntervalMs?: number; transport?: RuntimeTransport }
@@ -9,6 +9,10 @@ export class RuntimeClient {
   async connect(input?: { identity: { id: string; name: string; version?: string; adapterVersion: string }; capabilities: IDECapabilities }) { await this.transport.connect(); const connection = await this.request<{ sessionId: string; capabilities: IDECapabilities }>("/v1/connect", { method: "POST", body: JSON.stringify(input ?? {}) }); this.connected = true; return connection; }
   async disconnect(): Promise<void> { this.connected = false; if (this.polling) clearTimeout(this.polling); await this.request("/v1/disconnect", { method: "POST" }); await this.transport.disconnect(); }
   getCapabilities(): Promise<RuntimeCapabilities> { return this.request("/v1/capabilities"); }
+  getWorkspaceStatus(): Promise<WorkspaceRuntimeStatus> { return this.request("/v1/workspace/status"); }
+  getProjectIntelligence(): Promise<ProjectIntelligenceView> { return this.request("/v1/workspace/intelligence"); }
+  getProjectSettings(): Promise<unknown> { return this.request("/v1/workspace/settings"); }
+  listTasks(): Promise<RuntimeTask[]> { return this.request("/v1/tasks"); }
   createTask(input: TaskCreateInput): Promise<RuntimeTask> { return this.request("/v1/tasks", { method: "POST", body: JSON.stringify(input) }); }
   getTask(taskId: string): Promise<RuntimeTask> { return this.request(`/v1/tasks/${encodeURIComponent(taskId)}`); }
   pauseTask(taskId: string): Promise<RuntimeTask> { return this.control(taskId, "pause"); }

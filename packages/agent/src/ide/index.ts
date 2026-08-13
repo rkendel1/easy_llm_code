@@ -4,5 +4,6 @@ export * from "./registry.js";
 export * from "./config.js";
 export * from "./adapters/vscode.js";
 export * from "./adapters/cursor.js";
+export * from "./adapters/zed.js";
 export * from "./protocol.js";
 export * from "./runtime-server.js";

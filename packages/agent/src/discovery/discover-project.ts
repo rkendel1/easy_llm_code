@@ -1,4 +1,4 @@
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import type { Project } from "../memory/types.js";
 import { resolveProjectIdentity } from "../memory/identity/project-identity.js";
 
@@ -41,11 +41,12 @@ export const discoverProject = async (requestedRoot: string): Promise<Project> =
   if (checks[6]) detectedLanguages.add("rust");
   if (checks[7]) detectedLanguages.add("go");
   if (checks[8] || checks[9]) detectedLanguages.add("python");
+  let projectName = identity.name; if (checks[0]) try { const manifest = JSON.parse(await readFile(`${root}/package.json`, "utf8")) as { name?: string }; if (manifest.name) projectName = manifest.name; } catch {}
 
   return {
     id: identity.id,
     root,
-    name: identity.name,
+    name: projectName,
     detectedLanguages: [...detectedLanguages],
     packageManagers
   };

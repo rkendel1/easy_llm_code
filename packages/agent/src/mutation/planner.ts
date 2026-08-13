@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { llm as routedLlm } from "@easy-llm/llm";
+import { invokeModel } from "../model/llm-cx.js";
 import type { IntelligentContextBundle } from "../context/types.js";
 import type { ProjectMemory } from "../memory/project-memory.js";
 import type { AgentPlan } from "../planning/types.js";
@@ -14,7 +14,7 @@ export type MutationLlm = (input: { plan: AgentPlan; context: IntelligentContext
 interface MutationPlannerOptions { root: string; memory: ProjectMemory; llm?: MutationLlm }
 const responseText = (value: unknown): string | undefined => { const item = value as { text?: string; output_text?: string; content?: string; message?: { content?: string } }; return item.text ?? item.output_text ?? item.content ?? item.message?.content; };
 const parse = (value: unknown): MutationProposal => { if (value && typeof value === "object" && "files" in value) return value as MutationProposal; const text = typeof value === "string" ? value : responseText(value); if (!text) throw new Error("Mutation model returned no proposal"); return JSON.parse(text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "")); };
-const defaultLlm: MutationLlm = async ({ prompt, model }) => routedLlm({ task: "mutation", capability: "reasoning", model, messages: [{ role: "user", content: prompt }] } as never);
+const defaultLlm: MutationLlm = async ({ prompt, model }) => invokeModel(prompt, { model });
 const promptFor = (plan: AgentPlan, context: IntelligentContextBundle, failure?: VerificationRun): string => [
   "Return one strict JSON MutationProposal. Propose unified diffs only; never request filesystem or shell access.",
   "Schema: {id,taskId,planId,files:[{path,operation,oldPath?,beforeHash?,afterHash?,patch}],rationale,expectedChanges,verification:[{id,command,purpose,required,timeoutMs}]}",

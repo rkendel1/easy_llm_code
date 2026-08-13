@@ -6,7 +6,7 @@ export type AgentEvent =
   | { type: "task.started"; taskId: string }
   | { type: "context.started" }
   | { type: "context.completed"; metrics: ContextMetrics }
-  | { type: "routing.completed"; model: string; provider: string; score: number; confidence: "low" | "medium" | "high" }
+  | { type: "routing.completed"; model: string; provider: string; score: number; confidence: "low" | "medium" | "high"; reason?: string[]; evidenceCount?: number }
   | { type: "impact.completed"; predictionId: string; affectedFiles: number; affectedTests: number; confidence: number }
   | { type: "execution.started"; executionId: string; mode: string }
   | { type: "execution.iteration.started"; iteration: number }

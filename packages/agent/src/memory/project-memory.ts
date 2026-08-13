@@ -68,6 +68,7 @@ export interface ProjectMemory {
   getSummary(): Promise<MemorySummary>;
   getCapabilities(): Promise<MemoryCapabilities>;
   persist(): Promise<void>;
+  batch<T>(action: () => Promise<T>): Promise<T>;
   reset(scope?: MemoryResetScope): Promise<MemoryResetResult>;
   prepareRebuild(): Promise<MemoryResetResult>;
   beginGeneration(reason: string): Promise<number>;

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { llm as routedLlm } from "@easy-llm/llm";
+import { invokeModel } from "../model/llm-cx.js";
 import type { createContextEngine } from "../context/build-context.js";
 import type { ContextItem, IntelligentContextBundle } from "../context/types.js";
 import { createPlanExecutor } from "../execution/executor.js";
@@ -25,7 +25,7 @@ const contextEvidence = (taskId: string, item: ContextItem): Evidence => ({
   id: item.id, taskId, source: item.type === "observation" ? "observation" : item.type === "commit" || item.type === "change" ? "git" : item.type === "test" ? "test" : "file",
   reference: item.reference, excerpt: item.content.slice(0, 2_000), confidence: item.score
 });
-const defaultPlannerLlm: PlannerLlm = async ({ prompt, model }) => routedLlm({ task: "planning", capability: "reasoning", model, messages: [{ role: "user", content: prompt }] } as never);
+const defaultPlannerLlm: PlannerLlm = async ({ prompt, model }) => invokeModel(prompt, { model });
 
 export const createTaskPlanner = (options: PlannerOptions) => ({
   async plan(request: string, runOptions: PlannerRunOptions = {}): Promise<PlanningResult> {

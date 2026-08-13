@@ -7,7 +7,6 @@ import { createCodeAgent } from "../agent/create-agent.js";
 import { discoverProject } from "../discovery/discover-project.js";
 import { indexProjectIntoMemory } from "../indexing/index-project.js";
 import { createFeltDBProjectMemory } from "../memory/feltdb-project-memory.js";
-import { createProjectMemory } from "../memory/create-project-memory.js";
 import { writeMemoryConfig, type MemoryStorageMode } from "../memory/core/memory-config.js";
 import { reconcileProjectMemory } from "../memory/lifecycle/reconcile.js";
 import { ingestRepositoryHistory } from "../history/ingest-history.js";
@@ -30,6 +29,9 @@ import { LocalProcessSandboxProvider } from "../sandbox/providers/local/local-pr
 import { createIDERegistry } from "../ide/registry.js";
 import { readIDEConfiguration, resolveIDESelection, writeIDEConfiguration } from "../ide/config.js";
 import { startRuntimeServer } from "../ide/runtime-server.js";
+import { onboardProject, getWorkspaceStatus, openProjectMemory, inferWorkspaceTaskMode, createProgressProjector, renderCompletion, renderContinuation, renderProgress, renderWelcome, renderWorkspaceStatus } from "../workspace/index.js";
+import { readProjectConfig, updateProjectSetting } from "../config/project-config.js";
+import type { TaskRunResult } from "../task/runner.js";
 
 const args = process.argv.slice(2);
 const rootArg = args.find((arg) => arg.startsWith("--root="));
@@ -105,9 +107,10 @@ const main = async (): Promise<void> => {
   if (requestArg === "memory" && positional[1] === "configure") {
     const mode = positional[2] as MemoryStorageMode | undefined; if (!mode || !["local", "hosted", "hybrid"].includes(mode)) throw new Error("Usage: llm-code memory configure <local|hosted|hybrid>"); await writeMemoryConfig({ mode }); console.log(`Project memory mode configured: ${mode}.`); return;
   }
-  const memory = await createProjectMemory(project);
+  const { memory } = await openProjectMemory(project);
 
   if (requestArg === "doctor") { await printDoctor(memory); return; }
+  if (requestArg === "settings") { if (positional[1] === "set") { const key = positional[2], value = positional[3]; if (!key || value === undefined) throw new Error("Usage: llm-code settings set <key> <value>"); console.log(JSON.stringify(await updateProjectSetting(project.id, key, value), null, 2)); } else console.log(JSON.stringify(await readProjectConfig(project.id), null, 2)); return; }
   if (requestArg === "memory" && positional[1] === "status") { const status = await memory.getStatus(); if (jsonMode) console.log(JSON.stringify(status, null, 2)); else console.log(`Project Memory\n──────────────────────────────\nProject\n  ${project.name} (${status.projectId})\nStorage\n  ${status.provider}\nPersistence\n  ${status.capabilities.persistent ? "✓" : "✗"} persistent\n  ${status.capabilities.crossProcess ? "✓" : "✗"} cross-process\nGraph\n${Object.entries(status.statistics.nodes).map(([name, count]) => `  ${name.padEnd(14)} ${count}`).join("\n")}\nLast indexed\n  ${status.lastIndexedAt ?? "never"}\nLast task\n  ${status.lastTaskId ?? "none"}\nSync\n  ${status.sync.status}`); return; }
   if (requestArg === "memory" && positional[1] === "sync") { const state = await memory.sync(); console.log(jsonMode ? JSON.stringify(state) : `Memory sync: ${state.status} (${state.pendingChanges} pending, ${state.conflicts} conflicts)`); return; }
   if (requestArg === "memory" && positional[1] === "export") { console.log(JSON.stringify(await memory.exportMemory(), null, 2)); return; }
@@ -118,11 +121,11 @@ const main = async (): Promise<void> => {
     if (!accepted) throw new Error(`MEMORY_RESET_CONFIRMATION_REQUIRED: pass --confirm=${project.name}`); const result = await memory.reset(scope); console.log(jsonMode ? JSON.stringify(result) : `Reset ${scope} memory. Removed ${Object.values(result.removed).reduce((sum, count) => sum + count, 0)} facts. Generation ${result.generation}.`); return;
   }
   const rebuilding = requestArg === "memory" && positional[1] === "rebuild"; if (rebuilding) await memory.prepareRebuild();
-  const reconciliation = rebuilding ? { changed: true, indexed: await indexProjectIntoMemory(project.root, project, memory) } : await reconcileProjectMemory(project.root, project, memory);
+  const workspaceLaunch = requestArg === undefined, reconciliation = workspaceLaunch ? { changed: false as const } : rebuilding ? { changed: true, indexed: await indexProjectIntoMemory(project.root, project, memory) } : await reconcileProjectMemory(project.root, project, memory);
   if (!jsonMode && reconciliation.changed) console.log(rebuilding ? "Rebuilding repository memory..." : "Reconciling repository memory...");
 
   const indexed = reconciliation.indexed ?? { files: [], symbols: [], relationships: [] };
-  const history = await ingestRepositoryHistory(project.root, memory);
+  const history = workspaceLaunch ? { indexedCommits: 0, skipped: true } : await ingestRepositoryHistory(project.root, memory);
   await memory.persist();
   if (!jsonMode && (reconciliation.changed || history.indexedCommits)) {
     console.log(`✓ ${indexed.files.length} files`);
@@ -143,10 +146,10 @@ const main = async (): Promise<void> => {
     const registry = createIDERegistry(), detected = await registry.detect(), explicitIDE = optionValue("ide"), selection = await resolveIDESelection({ ...(explicitIDE ? { explicit: explicitIDE } : {}), projectRoot: root, detected: detected.filter((item) => item.detection.detected).map((item) => item.adapter.id) }); if (!selection.id) throw new Error("No IDE selected. Run: llm-code ide use <ide>"); const adapter = registry.get(selection.id), taskId = optionValue("task"); let requestedPath: string | undefined = positional[1]; if (taskId) { const plan = await memory.findPlanForTask(taskId), proposal = plan ? await memory.findMutationForPlan(plan.id) : undefined; requestedPath = proposal?.files[0]?.path; if (!requestedPath) throw new Error(`Task ${taskId} has no associated file`); } if (!requestedPath) throw new Error("Usage: llm-code open <file> [--ide <ide>] or llm-code open --task <task-id>"); const canonicalRoot = await realpath(root), target = await realpath(resolve(canonicalRoot, requestedPath)); if (target !== canonicalRoot && !target.startsWith(`${canonicalRoot}${sep}`)) throw new Error("IDE_OPEN_PATH_ESCAPE"); await adapter.connect(); try { await adapter.openFile({ path: target }); } finally { await adapter.disconnect(); } return;
   }
 
-  const executeLifecycle = async (request: string | undefined, mode: TaskMode, resumeId?: string): Promise<void> => {
-    const terminalApproval = createTerminalApproval();
+  const executeLifecycle = async (request: string | undefined, mode: TaskMode, resumeId?: string, workspaceUX = false): Promise<TaskRunResult> => {
+    const terminalApproval = createTerminalApproval(), workspaceConfig = await readProjectConfig(project.id), configuredAutonomy = args.includes("--safe") || args.includes("--aggressive") ? autonomyMode : workspaceConfig.execution.riskPolicy;
     const runner = createTaskRunner({
-      root, memory,
+      root, memory, policy: { maxRepairAttempts: workspaceConfig.verification.repairAttempts }, verification: { enabled: workspaceConfig.verification.enabled }, sandbox: { enabled: workspaceConfig.execution.sandbox, policy: { network: { mode: workspaceConfig.execution.networkPolicy, hosts: [] } } },
       askLlm: mockMode ? async ({ request: task }) => ({ summary: `Mock analysis for: ${task}` }) : undefined,
       plannerLlm: mockMode ? async ({ context }) => {
         const selected = context.files.slice(0, 3), fallback = context.items[0]?.id ?? "none";
@@ -156,9 +159,9 @@ const main = async (): Promise<void> => {
           verification: [{ id: "verify", description: "Review relevant tests", evidence: [selected.at(-1)?.id ?? fallback] }] };
       } : undefined,
       approval: async (input) => args.includes("--yes") ? "approved" : input.mode === "auto" ? "approved" : terminalApproval(input),
-      routing: { model: modelOption, budget: budgetOption }, autonomy: { mode: autonomyMode, budget: budgetOption === undefined ? undefined : { maxModelSpend: budgetOption } }
+      routing: { model: modelOption ?? (workspaceConfig.model.mode === "explicit" ? workspaceConfig.model.model : "auto"), budget: budgetOption }, autonomy: { mode: configuredAutonomy, budget: budgetOption === undefined ? undefined : { maxModelSpend: budgetOption } }
     });
-    runner.subscribe((event) => console.log(jsonMode ? JSON.stringify(event) : renderAgentEvent(event)));
+    const progress = createProgressProjector(); runner.subscribe((event) => { if (workspaceUX) { const rendered = renderProgress(progress.update(event)); if (rendered) console.log(rendered); } else console.log(jsonMode ? JSON.stringify(event) : renderAgentEvent(event)); });
     const onInterrupt = (): void => runner.cancel(); process.once("SIGINT", onInterrupt);
     try {
       const result = resumeId ? await runner.resume(resumeId) : await runner.run({ request: request ?? "", mode });
@@ -167,6 +170,8 @@ const main = async (): Promise<void> => {
         if (mode === "plan" && result.plan) for (const step of result.plan.steps) console.log(`${step.order}. ${step.description}${step.target ? `\n   ${step.target}` : ""}`);
         const models = await memory.getModelExecutions(result.taskId); if (result.outcome) console.log(renderPerformanceSummary({ model: models.at(-1), outcome: result.outcome, context: result.context?.metrics }));
       }
+      if (workspaceUX) console.log(await renderCompletion(result, memory));
+      return result;
     } finally { process.removeListener("SIGINT", onInterrupt); }
   };
 
@@ -283,13 +288,25 @@ const main = async (): Promise<void> => {
 
   let request = requestArg;
   if (!request) {
-    const rl = createInterface({ input, output });
-    request = await rl.question("What would you like me to understand?\n> ");
-    rl.close();
+    const rl = createInterface({ input, output }); let workspaceRuntime: Awaited<ReturnType<typeof startRuntimeServer>> | undefined;
+    try {
+      const onboarding = await onboardProject({ project, memory, ...(input.isTTY && output.isTTY ? { selectIDE: async (choices: Array<{ id: string; name: string }>) => { console.log(`Coding Environment\nWe found:\n${choices.map((choice, index) => `  ${index + 1}. ${choice.name}`).join("\n")}\n  ${choices.length + 1}. Terminal`); const answer = await rl.question("Where would you like to use easy-llm-code? "); const index = Number(answer) - 1; return index === choices.length ? undefined : choices[index]?.id; } } : {}) });
+      if (input.isTTY && output.isTTY) workspaceRuntime = await startRuntimeServer({ root, memory });
+      const config = await readProjectConfig(project.id), status = await getWorkspaceStatus(project, config, memory); console.log(renderWelcome(onboarding)); console.log(renderWorkspaceStatus(status)); console.log(renderContinuation(status));
+      if (!input.isTTY || !output.isTTY) return;
+      while (true) {
+        const next = (await rl.question("\nWhat would you like to change?\n> ")).trim(); if (!next) continue; if (["/exit", "/quit", "exit", "quit"].includes(next.toLowerCase())) return;
+        if (next === "/status") { console.log(renderWorkspaceStatus(await getWorkspaceStatus(project, await readProjectConfig(project.id), memory))); continue; }
+        if (next === "/settings") { console.log(JSON.stringify(await readProjectConfig(project.id), null, 2)); continue; }
+        if (next.startsWith("/settings ")) { const assignment = next.slice(10), separator = assignment.indexOf("="); if (separator < 1) { console.log("Use /settings key=value"); continue; } console.log(JSON.stringify(await updateProjectSetting(project.id, assignment.slice(0, separator).trim(), assignment.slice(separator + 1).trim()), null, 2)); continue; }
+        if (next === "/tasks") { const tasks = await memory.listTasks(10); console.log(tasks.map((task) => `${task.status === "completed" ? "✓" : "•"} ${task.request}  ${task.id}`).join("\n") || "No tasks yet."); continue; }
+        if (next.startsWith("/resume ")) { await executeLifecycle(undefined, "edit", next.slice(8).trim(), true); continue; }
+        try { await executeLifecycle(next, inferWorkspaceTaskMode(next), undefined, true); } catch (error) { console.log(`⚠ Attention required\n${(error as Error).message}\nYou can continue, retry, or inspect with llm-code doctor.`); }
+      }
+    } finally { rl.close(); if (workspaceRuntime) await workspaceRuntime.close(); }
   }
 
-  const mutationIntent = /^(add|change|create|delete|fix|implement|modify|refactor|remove|rename|update)\b/i.test(request ?? "");
-  await executeLifecycle(request ?? "", configuredMode ?? (mutationIntent ? "edit" : "ask"));
+  await executeLifecycle(request ?? "", configuredMode ?? inferWorkspaceTaskMode(request ?? ""));
 };
 
-void main();
+await main();

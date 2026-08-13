@@ -1,10 +1,13 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { relative } from "node:path";
+import { realpath } from "node:fs/promises";
 import type { CommitRecord, FileChangeRecord, ParsedCommit } from "./history-types.js";
 
 const exec = promisify(execFile);
 const runGit = async (root: string, args: string[]): Promise<string> =>
   (await exec("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 })).stdout.trim();
+const scopeFor = async (root: string): Promise<string | undefined> => { const repositoryRoot = await realpath(await runGit(root, ["rev-parse", "--show-toplevel"])), canonicalRoot = await realpath(root), scope = relative(repositoryRoot, canonicalRoot).replace(/\\/g, "/"); return scope || undefined; };
 
 export const getHead = async (root: string): Promise<string | undefined> => {
   try { return await runGit(root, ["rev-parse", "HEAD"]); } catch { return undefined; }
@@ -13,10 +16,10 @@ export const getHead = async (root: string): Promise<string | undefined> => {
 export const listUnseenCommits = async (root: string, cursor?: string): Promise<string[]> => {
   const range = cursor ? `${cursor}..HEAD` : "HEAD";
   try {
-    const output = await runGit(root, ["log", "--reverse", "--format=%H", range]);
+    const scope = await scopeFor(root), output = await runGit(root, ["log", "--reverse", "--format=%H", range, ...(scope ? ["--", scope] : [])]);
     return output ? output.split("\n").filter(Boolean) : [];
   } catch {
-    const output = await runGit(root, ["log", "--reverse", "--format=%H", "HEAD"]);
+    const scope = await scopeFor(root), output = await runGit(root, ["log", "--reverse", "--format=%H", "HEAD", ...(scope ? ["--", scope] : [])]);
     return output ? output.split("\n").filter(Boolean) : [];
   }
 };
@@ -32,18 +35,19 @@ export const readCommit = async (root: string, sha: string): Promise<ParsedCommi
     id: `commit:${actualSha}`, sha: actualSha, parentShas: parents ? parents.split(" ") : [],
     author: author || undefined, timestamp, message: message.join("\x1f").trim()
   };
+  const scope = await scopeFor(root), pathArgs = scope ? ["--", scope] : [], localPath = (path: string | undefined): string | undefined => path && scope && path.startsWith(`${scope}/`) ? path.slice(scope.length + 1) : path;
   const [statuses, stats] = await Promise.all([
-    runGit(root, ["diff-tree", "--root", "--no-commit-id", "-r", "-M", "-C", "--name-status", sha]),
-    runGit(root, ["diff-tree", "--root", "--no-commit-id", "-r", "-M", "-C", "--numstat", sha])
+    runGit(root, ["diff-tree", "--root", "--no-commit-id", "-r", "-M", "-C", "--name-status", sha, ...pathArgs]),
+    runGit(root, ["diff-tree", "--root", "--no-commit-id", "-r", "-M", "-C", "--numstat", sha, ...pathArgs])
   ]);
   const statByPath = new Map<string, [number, number]>();
   for (const line of stats.split("\n").filter(Boolean)) {
     const [a, d, ...pathParts] = line.split("\t");
-    const path = pathParts.at(-1) ?? "";
+    const path = localPath(pathParts.at(-1)) ?? "";
     statByPath.set(path, [a === "-" ? 0 : Number(a), d === "-" ? 0 : Number(d)]);
   }
   const changes = statuses.split("\n").filter(Boolean).map((line, index): FileChangeRecord => {
-    const [status, first, second] = line.split("\t");
+    const [status, rawFirst, rawSecond] = line.split("\t"), first = localPath(rawFirst) ?? "", second = localPath(rawSecond);
     const kind = changeType(status);
     const oldPath = kind === "renamed" || kind === "copied" || kind === "deleted" ? first : undefined;
     const newPath = kind === "renamed" || kind === "copied" ? second : kind === "deleted" ? undefined : first;

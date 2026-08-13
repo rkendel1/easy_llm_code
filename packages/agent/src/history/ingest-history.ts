@@ -6,7 +6,7 @@ export interface HistoryIngestResult { head?: string; indexedCommits: number; sk
 export const ingestRepositoryHistory = async (root: string, memory: ProjectMemory): Promise<HistoryIngestResult> => {
   const [head, cursor] = await Promise.all([getHead(root), memory.getHistoryCursor()]);
   if (!head || head === cursor?.lastIndexedCommit) return { head, indexedCommits: 0, skipped: true };
-  const shas = await listUnseenCommits(root, cursor?.lastIndexedCommit);
+  return memory.batch(async () => { const shas = await listUnseenCommits(root, cursor?.lastIndexedCommit);
   let indexedCommits = 0;
   for (const sha of shas) {
     const parsed = await readCommit(root, sha);
@@ -14,5 +14,6 @@ export const ingestRepositoryHistory = async (root: string, memory: ProjectMemor
     await memory.setHistoryCursor({ repositoryId: (await memory.getProject()).id, lastIndexedCommit: sha });
     indexedCommits++;
   }
-  return { head, indexedCommits, skipped: false };
+  await memory.setHistoryCursor({ repositoryId: (await memory.getProject()).id, lastIndexedCommit: head });
+  return { head, indexedCommits, skipped: false }; });
 };

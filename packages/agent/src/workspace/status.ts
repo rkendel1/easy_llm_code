@@ -1,0 +1,8 @@
+import type { ProjectMemory } from "../memory/project-memory.js";
+import type { Project } from "../memory/types.js";
+import type { ProjectConfig } from "../config/project-config.js";
+import { initializeModelCX } from "../model/llm-cx.js";
+import { createIDERegistry } from "../ide/registry.js";
+import type { WorkspaceStatus } from "./types.js";
+const terminal = new Set(["completed", "failed", "cancelled"]);
+export const getWorkspaceStatus = async (project: Project, config: ProjectConfig, memory: ProjectMemory): Promise<WorkspaceStatus> => { const [memoryStatus, ai, tasks, detected] = await Promise.all([memory.getStatus(), initializeModelCX(), memory.listTasks(20), createIDERegistry().detect()]), interrupted = tasks.find((task) => !terminal.has(task.status)); const state = memoryStatus.integrity === "ok" && memoryStatus.capabilities.persistent ? "ready" : "attention-required"; return { state, project: { id: project.id, name: project.name, indexed: (memoryStatus.statistics.nodes.files ?? 0) > 0 }, memory: memoryStatus, ai, sandbox: { enabled: config.execution.sandbox, network: config.execution.networkPolicy === "none" ? "restricted" : config.execution.networkPolicy }, ide: { selected: config.ide.adapter, detected: detected.filter((item) => item.detection.detected).map((item) => item.adapter.id), connected: Boolean(config.ide.adapter) }, recentTasks: tasks.map((task) => ({ id: task.id, request: task.request, status: task.status, createdAt: task.createdAt })), ...(interrupted ? { interruptedTask: { id: interrupted.id, request: interrupted.request, status: interrupted.status } } : {}) }; };
