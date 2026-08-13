@@ -1,5 +1,5 @@
 export const PRODUCT_NAME = "easy-llm-code";
-export const PRODUCT_VERSION = "0.1.0";
+export const PRODUCT_VERSION = "0.1.1";
 export const COMPATIBILITY_COMMAND = "llm-code";
 
 export type InstallKind = "native" | "homebrew" | "npm" | "development" | "unknown";
