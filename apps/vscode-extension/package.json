@@ -2,7 +2,7 @@
   "name": "easy-llm-code",
   "displayName": "easy-llm-code",
   "description": "Project-aware coding agent with local memory and automatic model routing.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "easy-llm",
   "repository": { "type": "git", "url": "https://github.com/rkendel1/easy_llm_code.git" },
   "type": "module",
@@ -32,11 +32,13 @@
       },
       {
         "command": "easyLlmCode.refresh",
-        "title": "easy-llm-code: Refresh"
+        "title": "Refresh",
+        "icon": "$(refresh)"
       },
       {
         "command": "easyLlmCode.setupProvider",
-        "title": "easy-llm-code: Set Up Provider"
+        "title": "Set Up Provider",
+        "icon": "$(key)"
       },
       {
         "command": "easyLlmCode.unlockProvider",
