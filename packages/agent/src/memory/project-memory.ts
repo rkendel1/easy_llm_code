@@ -18,6 +18,7 @@ import type {
   ProjectSymbol
 } from "./types.js";
 import type { CommitRecord, FileChangeRecord, HistoryCursor } from "../history/history-types.js";
+import type { AgentPlan, Evidence, ModelExecution, ToolRun } from "../planning/types.js";
 
 export interface ProjectMemory {
   initialize(project: Project): Promise<void>;
@@ -37,6 +38,11 @@ export interface ProjectMemory {
   getChangeImpact(files: string[]): Promise<ChangeImpact>;
   getSummary(): Promise<MemorySummary>;
   getCapabilities(): Promise<MemoryCapabilities>;
+  persistPlan(plan: AgentPlan): Promise<void>;
+  getPlan(planId: string): Promise<AgentPlan | undefined>;
+  recordToolRun(run: ToolRun): Promise<void>;
+  recordEvidence(evidence: Evidence, planId: string, stepId?: string): Promise<void>;
+  recordModelExecution(execution: ModelExecution): Promise<void>;
   subscribeToProjectChanges(listener: (event: ProjectChangeEvent) => void): () => void;
   queryContext(query: ContextQuery): Promise<ContextBundle>;
 }

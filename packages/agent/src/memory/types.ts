@@ -47,7 +47,11 @@ export type ProjectRelation =
   | "REVERTED_BY"
   | "OBSERVED"
   | "PRODUCED"
-  | "RELATED_TO";
+  | "RELATED_TO"
+  | "HAS_CONTEXT"
+  | "HAS_PLAN"
+  | "PLAN_STEP"
+  | "SUPPORTED_BY";
 
 export interface ProjectEdge {
   id: string;
@@ -98,7 +102,7 @@ export interface Observation {
 export interface AgentTask {
   id: string;
   request: string;
-  status: "created" | "analyzing" | "completed" | "failed";
+  status: "created" | "analyzing" | "planning" | "planned" | "executing" | "completed" | "failed" | "cancelled";
   createdAt: string;
   completedAt?: string;
 }

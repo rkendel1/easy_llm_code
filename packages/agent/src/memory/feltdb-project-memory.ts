@@ -4,6 +4,7 @@ import type { CommitRecord, FileChangeRecord, HistoryCursor } from "../history/h
 import type { ProjectMemory } from "./project-memory.js";
 import type { AgentTask, ChangeRecord, ContextBundle, ContextFile, ContextQuery, ContextSymbol,
   Observation, Project, ProjectChangeEvent, ProjectEdge, ProjectFile, ProjectSymbol, RiskSignal } from "./types.js";
+import type { AgentPlan, Evidence, ModelExecution, PlanStep, ToolRun } from "../planning/types.js";
 
 interface StoredObservation extends Observation { id: string; projectId: string }
 interface StoredChange extends FileChangeRecord { projectId: string }
@@ -41,6 +42,11 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
   const changes = db.collection<StoredChange>("changes");
   const cursors = db.collection<HistoryCursor & { id: string }>("history-cursors");
   const cochanges = db.collection<CoChange>("cochanges");
+  const plans = db.collection<AgentPlan & { projectId: string }>("plans");
+  const planSteps = db.collection<PlanStep & { projectId: string; planId: string }>("plan_steps");
+  const toolRuns = db.collection<ToolRun & { projectId: string }>("tool_runs");
+  const evidenceRecords = db.collection<Evidence & { projectId: string; planId: string; stepId?: string }>("evidence");
+  const modelExecutions = db.collection<ModelExecution & { projectId: string }>("model_executions");
   let currentProjectId: string | undefined;
   const listeners = new Set<(event: ProjectChangeEvent) => void>();
 
@@ -159,6 +165,24 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
       const runtime = db.runtime();
       return { persistent: runtime.persistent, reactive: runtime.reactive, temporal: true, graph: true };
     },
+    async persistPlan(plan) {
+      const id = projectId(); await upsert(plans, { ...plan, projectId: id });
+      await upsert(edges, { id: `edge:task-plan:${plan.taskId}:${plan.id}`, projectId: id, from: `task:${plan.taskId}`, to: `plan:${plan.id}`, relation: "HAS_PLAN", confidence: 1, source: "agent" });
+      for (const step of plan.steps) {
+        await upsert(planSteps, { ...step, projectId: id, planId: plan.id });
+        await upsert(edges, { id: `edge:plan-step:${plan.id}:${step.id}`, projectId: id, from: `plan:${plan.id}`, to: `step:${step.id}`, relation: "PLAN_STEP", confidence: 1, source: "agent" });
+        for (const evidenceId of step.evidence) await upsert(edges, { id: `edge:step-evidence:${step.id}:${evidenceId}`, projectId: id, from: `step:${step.id}`, to: `evidence:${evidenceId}`, relation: "SUPPORTED_BY", confidence: 1, source: "agent" });
+      }
+      emit("plan", [plan.id]);
+    },
+    async getPlan(planId) { return (await plans.find({ id: planId, projectId: projectId() }))[0]; },
+    async recordToolRun(run) { await upsert(toolRuns, { ...run, projectId: projectId() }); emit("tool_run", [run.id]); },
+    async recordEvidence(evidence, planId, stepId) {
+      const id = projectId(); await upsert(evidenceRecords, { ...evidence, projectId: id, planId, stepId });
+      if (stepId) await upsert(edges, { id: `edge:step-evidence:${stepId}:${evidence.id}`, projectId: id, from: `step:${stepId}`, to: `evidence:${evidence.id}`, relation: "SUPPORTED_BY", confidence: evidence.confidence, source: "agent" });
+      emit("evidence", [evidence.id]);
+    },
+    async recordModelExecution(execution) { await upsert(modelExecutions, { ...execution, projectId: projectId() }); emit("model_execution", [execution.id]); },
     subscribeToProjectChanges(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async queryContext(query: ContextQuery): Promise<ContextBundle> {
       const [projectFiles, projectSymbols, projectEdges, projectCommits, projectChanges, projectObservations, pairs] = await all();

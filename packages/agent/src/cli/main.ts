@@ -12,6 +12,7 @@ import { createContextEngine } from "../context/build-context.js";
 const args = process.argv.slice(2);
 const rootArg = args.find((arg) => arg.startsWith("--root="));
 const mockMode = args.includes("--mock");
+const jsonMode = args.includes("--json");
 const invocationCwd = process.env.INIT_CWD ?? process.cwd();
 const root = resolve(invocationCwd, rootArg ? rootArg.slice("--root=".length) : process.cwd());
 
@@ -55,16 +56,18 @@ const main = async (): Promise<void> => {
   const feltToken = process.env.FELTDB_TOKEN;
   const memory = createFeltDBProjectMemory({ root, server: feltUrl && feltToken ? { url: feltUrl, token: feltToken } : undefined });
   if (requestArg === "doctor") { await printDoctor(memory); return; }
-  console.log("Indexing repository...");
+  if (!jsonMode) console.log("Indexing repository...");
   const project = await discoverProject(root);
   await memory.initialize(project);
 
   const indexed = await indexProjectIntoMemory(root, project, memory);
   const history = await ingestRepositoryHistory(root, memory);
-  console.log(`✓ ${indexed.files.length} files`);
-  console.log(`✓ ${indexed.symbols.length} symbols`);
-  console.log(`✓ ${indexed.relationships.length} relationships`);
-  console.log(`✓ ${history.indexedCommits} new commits`);
+  if (!jsonMode) {
+    console.log(`✓ ${indexed.files.length} files`);
+    console.log(`✓ ${indexed.symbols.length} symbols`);
+    console.log(`✓ ${indexed.relationships.length} relationships`);
+    console.log(`✓ ${history.indexedCommits} new commits`);
+  }
 
   if (requestArg === "memory") { await printMemory(memory); return; }
   if (requestArg === "context") {
@@ -81,6 +84,32 @@ const main = async (): Promise<void> => {
     console.log(`Excluded: ${bundle.totalCandidates - bundle.selectedItems}`);
     console.log(`Context reduction: ${(bundle.metrics.compressionRatio * 100).toFixed(0)}%`);
     return;
+  }
+  if (requestArg === "plan") {
+    const request = positional.slice(1).join(" ");
+    if (!request) throw new Error("Usage: llm-code plan [--json] \"your requested change\"");
+    const planningAgent = createCodeAgent({
+      root, memory,
+      plannerLlm: mockMode ? async ({ context }) => {
+        const selectedFiles = context.files.slice(0, 3);
+        const fallback = context.items[0]?.id ?? "none";
+        return {
+          id: "mock-plan", taskId: "assigned-by-planner", objective: request, assumptions: [],
+          steps: selectedFiles.map((file, index) => ({ id: `step-${index + 1}`, order: index + 1, action: "inspect", description: `Inspect ${file.path}`, target: file.path, dependencies: index ? [`step-${index}`] : [], evidence: [file.id] })),
+          risks: [{ id: "risk-1", description: "Existing callers may rely on current behavior", severity: "medium", evidence: [selectedFiles[0]?.id ?? fallback] }],
+          expectedFiles: selectedFiles.map((file) => file.path),
+          verification: [{ id: "verify-1", description: "Review the resulting diff and relevant tests", evidence: [selectedFiles.at(-1)?.id ?? fallback] }]
+        };
+      } : undefined
+    });
+    const result = await planningAgent.plan({ request });
+    if (jsonMode) { console.log(JSON.stringify(result, null, 2)); return; }
+    console.log(`Planning...\nContext\n  ${result.context.selectedItems} items\n  ${result.context.estimatedTokens.toLocaleString()} estimated tokens`);
+    console.log("Plan\n────────────────────────────");
+    for (const step of result.plan.steps) console.log(`${step.order}. ${step.description}${step.target ? `\n   ${step.target}` : ""}`);
+    console.log("Risks"); for (const risk of result.plan.risks) console.log(`  • ${risk.description}`);
+    console.log("Verification"); for (const verification of result.plan.verification) console.log(`  • ${verification.description}`);
+    console.log("No files changed."); return;
   }
 
   let request = requestArg;

@@ -3,6 +3,9 @@ import type { ProjectMemory } from "../memory/project-memory.js";
 import type { AgentAnalysis } from "../memory/types.js";
 import { createContextEngine } from "../context/build-context.js";
 import type { ContextBudget, ExpansionPolicy, RankingWeights } from "../context/types.js";
+import { createTaskPlanner, type PlannerLlm } from "../planning/planner.js";
+import type { ToolRegistry } from "../tools/registry.js";
+import type { ToolPolicy } from "../tools/types.js";
 import { parseAgentAnalysis, runTask } from "./run-task.js";
 import type { AgentRunRequest, AgentRunResult, LlmExecutor } from "./types.js";
 
@@ -11,6 +14,9 @@ interface CreateCodeAgentOptions {
   memory: ProjectMemory;
   llm?: LlmExecutor;
   context?: { budget?: Partial<ContextBudget>; ranking?: Partial<RankingWeights>; expansion?: Partial<ExpansionPolicy> };
+  plannerLlm?: PlannerLlm;
+  tools?: ToolRegistry;
+  toolPolicy?: ToolPolicy;
 }
 
 const toPrompt = (task: string, context: unknown): string =>
@@ -62,8 +68,10 @@ const executeWithDefaultLlm: LlmExecutor = async ({ task, context }): Promise<Ag
 export const createCodeAgent = (options: CreateCodeAgentOptions) => {
   const llm = options.llm ?? executeWithDefaultLlm;
   const contextEngine = createContextEngine({ memory: options.memory, ...options.context });
+  const planner = createTaskPlanner({ root: options.root, memory: options.memory, contextEngine, llm: options.plannerLlm, registry: options.tools, policy: options.toolPolicy });
 
   return {
+    plan: (request: AgentRunRequest) => planner.plan(request.request),
     run: async (request: AgentRunRequest): Promise<AgentRunResult> =>
       runTask(
         {
