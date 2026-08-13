@@ -9,7 +9,8 @@ const execute = (command: { executable: string; args: string[]; command: string 
   const started = Date.now(); let stdout = "", stderr = "", done = false, exceeded = false;
   const environment: NodeJS.ProcessEnv = { PATH: process.env.PATH, CI: "1", NO_COLOR: "1", npm_config_offline: policy.allowNetwork ? "false" : "true",
     HTTP_PROXY: policy.allowNetwork ? process.env.HTTP_PROXY : "http://127.0.0.1:9", HTTPS_PROXY: policy.allowNetwork ? process.env.HTTPS_PROXY : "http://127.0.0.1:9", NO_PROXY: policy.allowNetwork ? process.env.NO_PROXY : "*" };
-  const child = spawn(command.executable, command.args, { cwd: root, env: environment, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+  const executable = process.platform === "win32" && /^(npm|npx|pnpm|yarn)$/.test(command.executable) ? `${command.executable}.cmd` : command.executable;
+  const child = spawn(executable, command.args, { cwd: root, env: environment, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32", shell: process.platform === "win32" });
   const stop = (): void => { if (child.pid && process.platform !== "win32") { try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); } } else child.kill("SIGKILL"); };
   const append = (target: "stdout" | "stderr", chunk: Buffer): void => { const text = chunk.toString("utf8"); if (target === "stdout") stdout += text; else stderr += text; if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > policy.maxOutputBytes) { exceeded = true; stop(); } };
   child.stdout.on("data", (chunk: Buffer) => append("stdout", chunk)); child.stderr.on("data", (chunk: Buffer) => append("stderr", chunk));

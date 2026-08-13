@@ -67,7 +67,7 @@ export const discoverFiles = async (root: string): Promise<ProjectFile[]> => {
         continue;
       }
       const info = await stat(absolute);
-      const rel = relative(root, absolute);
+      const rel = relative(root, absolute).replace(/\\/g, "/");
       const ext = extension(rel);
       files.push({
         id: `file:${rel}`,
