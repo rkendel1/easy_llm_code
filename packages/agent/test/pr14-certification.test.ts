@@ -32,7 +32,7 @@ describe("PR14 zero-friction installation certification", () => {
   it("activates a verified native update atomically and can roll back", async () => {
     process.env.EASY_LLM_CODE_INSTALL_KIND = "native"; const directory = await mkdtemp(join(tmpdir(), "pr14-update-")), executable = join(directory, "easy-llm-code"), oldRuntime = "old-runtime", nextRuntime = new TextEncoder().encode("new-runtime"); await writeFile(executable, oldRuntime); await chmod(executable, 0o755);
     const manifest: UpdateManifest = { schemaVersion: 1, version: "9.0.0", publishedAt: "2026-08-13T00:00:00.000Z", artifacts: { "linux-x64": { url: "https://release.invalid/runtime", sha256: digest(nextRuntime), size: nextRuntime.byteLength } } };
-    const result = await applyNativeUpdate({ manifest, executable, platform: "linux-x64", fetcher: async () => new Response(nextRuntime) }); expect(result.status).toBe("updated"); expect(await readFile(executable, "utf8")).toBe("new-runtime"); expect((await stat(executable)).mode & 0o111).not.toBe(0);
+    const result = await applyNativeUpdate({ manifest, executable, platform: "linux-x64", fetcher: async () => new Response(nextRuntime) }); expect(result.status).toBe("updated"); expect(await readFile(executable, "utf8")).toBe("new-runtime"); if (process.platform !== "win32") expect((await stat(executable)).mode & 0o111).not.toBe(0);
     await rollbackNativeUpdate(executable); expect(await readFile(executable, "utf8")).toBe(oldRuntime);
   });
 

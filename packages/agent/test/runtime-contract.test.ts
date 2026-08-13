@@ -31,7 +31,7 @@ describe("FeltDB runtime and dependency contract", () => {
     await exec(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", `${prelude} const memory=createFeltDBProjectMemory({root,namespace,storagePath}); await memory.initialize(project); await memory.upsertTask({id:'restart-task',request:'remember',status:'completed',createdAt:new Date().toISOString()}); await memory.recordObservation({id:'restart-observation',taskId:'restart-task',type:'agent_analysis',content:'remembered',timestamp:new Date().toISOString()}); await memory.persist();`]);
     const result = await exec(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", `${prelude} const memory=createFeltDBProjectMemory({root,namespace,storagePath}); await memory.initialize(project); const recalled=await memory.getTask('restart-task'); console.log(JSON.stringify({capabilities:await memory.getCapabilities(),content:recalled?.observations[0]?.content}));`]);
     expect(JSON.parse(result.stdout)).toMatchObject({ capabilities: { persistent: true, crossProcess: true, storage: "feltdb-local-journal" }, content: "remembered" });
-    expect((await stat(storagePath)).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect((await stat(storagePath)).mode & 0o777).toBe(0o600);
   });
 
   it.runIf(Boolean(process.env.FELTDB_URL && process.env.FELTDB_TOKEN))(
