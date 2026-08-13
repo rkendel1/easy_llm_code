@@ -27,7 +27,9 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - run: npm run build
-      - run: npm test
+      - name: Run agent certification without cross-file resource contention
+        run: npm test -w @easy-llm/code-agent -- --maxWorkers=1 --minWorkers=1
+      - run: npm test -w @easy-llm/code-website
       - name: Build self-contained runtime
         shell: bash
         run: npm run build:native

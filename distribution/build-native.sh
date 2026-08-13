@@ -11,7 +11,9 @@ case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; x86_64|amd64) arch=x64 ;; *) 
 extension=""; [ "$platform" != win32 ] || extension=.exe
 artifact="$output/easy-llm-code-$platform-$arch$extension"
 npx --yes esbuild@0.25.9 "$root/packages/agent/src/cli/main.ts" --bundle --platform=node --format=cjs --target=node20 --define:import.meta.url=__filename --outfile="$temporary/bundle.cjs"
-printf '{"main":"%s","output":"%s","disableExperimentalSEAWarning":true,"useSnapshot":false,"useCodeCache":false}\n' "$temporary/bundle.cjs" "$temporary/sea-prep.blob" > "$temporary/sea-config.json"
+sea_main="$temporary/bundle.cjs"; sea_blob="$temporary/sea-prep.blob"
+if [ "$platform" = win32 ]; then sea_main="$(cygpath -m "$sea_main")"; sea_blob="$(cygpath -m "$sea_blob")"; fi
+printf '{"main":"%s","output":"%s","disableExperimentalSEAWarning":true,"useSnapshot":false,"useCodeCache":false}\n' "$sea_main" "$sea_blob" > "$temporary/sea-config.json"
 node --experimental-sea-config "$temporary/sea-config.json"
 rm -f "$artifact" "$artifact.sha256"
 cp "$(command -v node)" "$artifact"
