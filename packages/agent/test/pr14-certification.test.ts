@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { applyNativeUpdate, checkForUpdate, resolvePlatform, resolveUpdateArtifact, rollbackNativeUpdate, verifyArtifact, type UpdateManifest } from "../src/installation/index.js";
-import { createSetupDeepLink, parseSetupDeepLink } from "../src/ide/setup.js";
+import { createSetupDeepLink, EXTENSION_DOWNLOAD_URL, installIDEIntegration, parseSetupDeepLink } from "../src/ide/setup.js";
 
 const originalKind = process.env.EASY_LLM_CODE_INSTALL_KIND;
-afterEach(() => { if (originalKind === undefined) delete process.env.EASY_LLM_CODE_INSTALL_KIND; else process.env.EASY_LLM_CODE_INSTALL_KIND = originalKind; });
+const originalUserConfig = process.env.EASY_LLM_CODE_USER_CONFIG;
+afterEach(() => { if (originalKind === undefined) delete process.env.EASY_LLM_CODE_INSTALL_KIND; else process.env.EASY_LLM_CODE_INSTALL_KIND = originalKind; if (originalUserConfig === undefined) delete process.env.EASY_LLM_CODE_USER_CONFIG; else process.env.EASY_LLM_CODE_USER_CONFIG = originalUserConfig; });
 const digest = (value: Uint8Array | string) => createHash("sha256").update(value).digest("hex");
 
 describe("PR14 zero-friction installation certification", () => {
@@ -38,6 +39,12 @@ describe("PR14 zero-friction installation certification", () => {
 
   it("keeps setup deep links runtime-agnostic and project-associated", () => {
     const link = createSetupDeepLink({ ide: "cursor", project: "/work/example" }); expect(parseSetupDeepLink(link)).toEqual({ action: "setup", ide: "cursor", project: "/work/example" }); expect(() => parseSetupDeepLink("https://example.com/setup")).toThrow("INVALID_SETUP_DEEP_LINK");
+  });
+
+  it("installs the release VSIX through the detected VS Code command", async () => {
+    process.env.EASY_LLM_CODE_USER_CONFIG = join(await mkdtemp(join(tmpdir(), "pr14-ide-")), "user.json");
+    const calls: Array<{ command: string; args: string[] }> = []; const result = await installIDEIntegration("vscode", async (command, args) => { calls.push({ command, args }); return { stdout: "", stderr: "" }; }, async (url) => { expect(url).toBe(EXTENSION_DOWNLOAD_URL); return new Response("vsix"); });
+    expect(result.installed).toBe(true); expect(calls[0].command).toMatch(/(?:^|\/)code$/); expect(calls[0].args[0]).toBe("--install-extension"); expect(calls[0].args[1]).toMatch(/easy-llm-code-vscode\.vsix$/); expect(calls[0].args[2]).toBe("--force");
   });
 
   it("ships integrity-checking installers, uninstallers, release metadata, and Homebrew generation", async () => {

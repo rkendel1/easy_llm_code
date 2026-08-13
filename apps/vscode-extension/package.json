@@ -1,0 +1,104 @@
+{
+  "name": "easy-llm-code",
+  "displayName": "easy-llm-code",
+  "description": "Project-aware coding agent with local memory and automatic model routing.",
+  "version": "0.2.0",
+  "publisher": "easy-llm",
+  "repository": { "type": "git", "url": "https://github.com/rkendel1/easy_llm_code.git" },
+  "type": "module",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:easyLlmCode.chat",
+    "onCommand:easyLlmCode.open"
+  ],
+  "main": "./dist/extension.js",
+  "files": [
+    "dist",
+    "media",
+    "README.md",
+    "package.json"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "easyLlmCode.open",
+        "title": "easy-llm-code: Open Chat"
+      },
+      {
+        "command": "easyLlmCode.refresh",
+        "title": "easy-llm-code: Refresh"
+      },
+      {
+        "command": "easyLlmCode.setupProvider",
+        "title": "easy-llm-code: Set Up Provider"
+      },
+      {
+        "command": "easyLlmCode.unlockProvider",
+        "title": "easy-llm-code: Unlock Provider Vault"
+      }
+    ],
+    "configuration": {
+      "title": "easy-llm-code",
+      "properties": {
+        "easyLlmCode.executable": {
+          "type": "string",
+          "default": "easy-llm-code",
+          "description": "Path to the easy-llm-code executable."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "easyLlmCode",
+          "title": "easy-llm-code",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "easyLlmCode": [
+        {
+          "type": "webview",
+          "id": "easyLlmCode.chat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "easyLlmCode.refresh",
+          "when": "view == easyLlmCode.chat",
+          "group": "navigation"
+        },
+        {
+          "command": "easyLlmCode.setupProvider",
+          "when": "view == easyLlmCode.chat",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && esbuild src/extension.ts --bundle --platform=node --format=esm --external:vscode --outfile=dist/extension.js",
+    "test": "node --test test/*.test.mjs",
+    "package": "vsce package --no-dependencies --out ../../release/easy-llm-code-vscode.vsix"
+  },
+  "dependencies": {
+    "@easy-llm/code-ide": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.25.12",
+    "typescript": "^5.9.2"
+  }
+}

@@ -35,10 +35,25 @@ jobs:
         run: npm run build:native
       - uses: actions/upload-artifact@v4
         with:
-          name: native-${{ runner.os }}-${{ runner.arch }}
+          name: release-native-${{ runner.os }}-${{ runner.arch }}
           path: release/*
+  extension:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run build -w @easy-llm/code-ide
+      - run: npm run build -w apps/vscode-extension
+      - run: npm run test -w apps/vscode-extension
+      - run: mkdir -p release && npm run package -w apps/vscode-extension
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-vscode-extension
+          path: release/easy-llm-code-vscode.vsix
   release:
-    needs: build
+    needs: [build, extension]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +61,7 @@ jobs:
         with: { node-version: 22 }
       - uses: actions/download-artifact@v4
         with:
-          pattern: native-*
+          pattern: release-*
           path: release
           merge-multiple: true
       - name: Generate checksums, updater manifest, and Homebrew cask

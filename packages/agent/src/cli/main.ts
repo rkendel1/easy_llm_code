@@ -32,6 +32,7 @@ import { readIDEConfiguration, resolveIDESelection, writeIDEConfiguration } from
 import { startRuntimeServer } from "../ide/runtime-server.js";
 import { onboardProject, getWorkspaceStatus, openProjectMemory, inferWorkspaceTaskMode, isWorkspaceExitIntent, createProgressProjector, renderCompletion, renderContinuation, renderProgress, renderWelcome, renderWorkspaceStatus } from "../workspace/index.js";
 import { readProjectConfig, resetProjectConfig, updateProjectSetting } from "../config/project-config.js";
+import { readUserConfig } from "../config/user-config.js";
 import { applyAutomaticUpdate, applyNativeUpdate, checkForUpdate, diagnoseInstallation, PRODUCT_NAME, PRODUCT_VERSION, renderDoctor, rollbackNativeUpdate } from "../installation/index.js";
 import { installIDEIntegration, parseSetupDeepLink } from "../ide/setup.js";
 import type { TaskRunResult } from "../task/runner.js";
@@ -311,6 +312,10 @@ const main = async (): Promise<void> => {
         }
       }
       const onboarding = await onboardProject({ project, memory, ...(input.isTTY && output.isTTY ? { selectIDE: async (choices: Array<{ id: string; name: string }>) => { console.log(`Coding Environment\nWe found:\n${choices.map((choice, index) => `  ${index + 1}. ${choice.name}`).join("\n")}\n  ${choices.length + 1}. Terminal`); const answer = await rl.question("Where would you like to use easy-llm-code? "); const index = Number(answer) - 1; return index === choices.length ? undefined : choices[index]?.id; } } : {}) });
+      if (input.isTTY && output.isTTY && onboarding.selectedIDE && ["vscode", "cursor"].includes(onboarding.selectedIDE) && !(await readUserConfig()).selectedIDEInstallations[onboarding.selectedIDE]) {
+        const answer = (await rl.question(`\nInstall the easy-llm-code sidebar in ${onboarding.detectedIDEs.find((item) => item.id === onboarding.selectedIDE)?.name ?? onboarding.selectedIDE}? [Y/n] `)).trim();
+        if (!/^n(?:o)?$/i.test(answer)) { try { console.log((await installIDEIntegration(onboarding.selectedIDE)).detail); } catch (error) { console.log(`Sidebar installation needs attention: ${(error as Error).message}\nRetry with: easy-llm-code ide install ${onboarding.selectedIDE}`); } }
+      }
       if (input.isTTY && output.isTTY) workspaceRuntime = await startRuntimeServer({ root, memory });
       const config = await readProjectConfig(project.id), status = await getWorkspaceStatus(project, config, memory); console.log(renderWelcome(onboarding)); console.log(renderWorkspaceStatus(status)); console.log(renderContinuation(status));
       if (!input.isTTY || !output.isTTY) return;

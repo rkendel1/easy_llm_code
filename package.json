@@ -1,14 +1,14 @@
 {
   "name": "easy-llm-code",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.2.0",
   "workspaces": [
     "packages/*",
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w @easy-llm/code-ide && npm run build -w @easy-llm/code-agent && npm run build -w @easy-llm/code-website",
-    "test": "npm run test -w @easy-llm/code-agent && npm run test -w @easy-llm/code-website",
+    "build": "npm run build -w @easy-llm/code-ide && npm run build -w @easy-llm/code-agent && npm run build -w @easy-llm/code-website && npm run build -w apps/vscode-extension",
+    "test": "npm run test -w @easy-llm/code-agent && npm run test -w @easy-llm/code-website && npm run test -w apps/vscode-extension",
     "code": "npm run code -w @easy-llm/code-agent --",
     "build:native": "sh distribution/build-native.sh"
   }
