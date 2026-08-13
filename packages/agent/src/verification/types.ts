@@ -5,5 +5,6 @@ export interface VerificationResult {
   stepId: string; command: string; status: "passed" | "failed" | "timed_out" | "denied";
   exitCode?: number; stdout: string; stderr: string; durationMs: number; classification?: string;
 }
-export interface VerificationRun { id: string; taskId: string; proposalId: string; results: VerificationResult[]; passed: boolean; startedAt: string; completedAt: string }
+export type VerificationScope = "syntax" | "type" | "targeted" | "affected" | "package" | "full";
+export interface VerificationRun { id: string; taskId: string; proposalId: string; results: VerificationResult[]; passed: boolean; startedAt: string; completedAt: string; verificationScope?: VerificationScope; verificationReason?: string }
 export const DEFAULT_EXECUTION_POLICY: ExecutionPolicy = { timeoutMs: 120_000, maxOutputBytes: 1_000_000, allowNetwork: false };

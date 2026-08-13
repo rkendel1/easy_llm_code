@@ -7,7 +7,7 @@ import type { TaskProfile } from "../intelligence/task-profile.js";
 import { buildRoutingCandidates, loadRegistryModels } from "./candidate-builder.js";
 import type { RoutingDecision } from "./decision.js";
 
-export interface ModelSelectionInput { taskId: string; profile: TaskProfile; budget?: number; model?: string; models?: ModelDefinition[] }
+export interface ModelSelectionInput { taskId: string; profile: TaskProfile; budget?: number; model?: string; models?: ModelDefinition[]; iteration?: number }
 export const selectModel = async (memory: ProjectMemory, input: ModelSelectionInput): Promise<RoutingDecision> => {
   const models = input.models ?? await loadRegistryModels(), outcomes = await retrieveComparableOutcomes(memory, input.profile);
   let built = buildRoutingCandidates(models, input.profile, outcomes, input.budget);
@@ -28,7 +28,7 @@ export const selectModel = async (memory: ProjectMemory, input: ModelSelectionIn
   if (preference === "fast") candidates = [...candidates].sort((a, b) => b.latencyScore - a.latencyScore || b.finalScore - a.finalScore || a.model.localeCompare(b.model));
   const selected = candidates[0], evidenceCount = selected.historicalEvidence, selectedBuilt = built.find((item) => item.candidate.model === selected.model)!;
   const confidence = { level: evidenceCount >= DEFAULT_ROUTING_POLICY.highConfidenceEvidence ? "high" : evidenceCount >= DEFAULT_ROUTING_POLICY.lowConfidenceEvidence ? "medium" : "low", evidenceCount, comparableTasks: evidenceCount, historicalSuccess: evidenceCount ? selected.historicalSuccess : undefined } as const;
-  const decision: RoutingDecision = { id: `routing:${input.taskId}`, taskId: input.taskId, selectedModel: selected.model, selectedProvider: selected.provider,
+  const decision: RoutingDecision = { id: `routing:${input.taskId}${input.iteration === undefined ? "" : `:${input.iteration}`}`, taskId: input.taskId, selectedModel: selected.model, selectedProvider: selected.provider,
     candidates, score: selected.finalScore, estimatedCost: selected.estimatedCost, profile: input.profile, createdAt: new Date().toISOString(),
     reason: { summary: [preference !== "auto" ? `model preference: ${preference}` : "adaptive deterministic routing", "required capabilities satisfied",
       evidenceCount ? `${evidenceCount} comparable model outcomes` : "cold start: neutral history", "cost and latency included"], confidence, evidenceTaskIds: selectedBuilt.historicalTaskIds } };

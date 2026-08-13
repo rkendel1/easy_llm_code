@@ -36,6 +36,7 @@ export const createTaskPlanner = (options: PlannerOptions) => ({
     await options.memory.recordObservation({ id: contextObservationId, type: "decision", taskId, content: { request, selected: context.items.map((item) => ({ id: item.id, score: item.score, reason: item.reason })), excludedCount: context.totalCandidates - context.selectedItems, estimatedTokens: context.estimatedTokens }, timestamp: new Date().toISOString(), relatedFiles: context.files.map((file) => file.id) });
     await options.memory.addRelationship({ id: `edge:task-context:${taskId}`, from: `task:${taskId}`, to: `observation:${contextObservationId}`, relation: "HAS_CONTEXT", confidence: 1, source: "agent" });
     await options.memory.addRelationship({ id: `edge:task-used-context:${taskId}`, from: `task:${taskId}`, to: `observation:${contextObservationId}`, relation: "USED_CONTEXT", confidence: 1, source: "agent" });
+    await options.memory.addRelationship({ id: `edge:task-selected-context:${taskId}`, from: `task:${taskId}`, to: `observation:${contextObservationId}`, relation: "SELECTED_CONTEXT", confidence: 1, source: "agent" });
     const evidence = context.items.map((item) => contextEvidence(taskId, item));
     for (const item of evidence) await options.memory.recordEvidence(item, `pending:${taskId}`);
     const started = Date.now(); const llm = options.llm ?? defaultPlannerLlm;

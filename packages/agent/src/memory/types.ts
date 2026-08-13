@@ -70,7 +70,20 @@ export type ProjectRelation =
   | "TRIGGERED_VERIFICATION"
   | "LIKELY_AFFECTS"
   | "LIKELY_REQUIRES_TEST"
-  | "LIKELY_REQUIRES_REVIEW";
+  | "LIKELY_REQUIRES_REVIEW"
+  | "HAS_PROFILE"
+  | "SELECTED_CONTEXT"
+  | "SELECTED_MODEL"
+  | "HAS_IMPACT_ASSESSMENT"
+  | "HAS_EXECUTION"
+  | "HAS_DECISION"
+  | "CHECKED_ASSUMPTION"
+  | "REFRESHED_CONTEXT"
+  | "SWITCHED_MODEL"
+  | "APPLIED_MUTATION"
+  | "RAN_VERIFICATION"
+  | "RAN_REVIEW"
+  | "REPLANNED";
 
 
 export interface ProjectEdge {
@@ -126,7 +139,7 @@ export interface Observation {
 export interface AgentTask {
   id: string;
   request: string;
-  status: "created" | "analyzing" | "contextualizing" | "planning" | "planned" | "awaiting_approval" | "executing" | "mutating" | "verifying" | "repairing" | "paused" | "completed" | "failed" | "cancelled";
+  status: "created" | "analyzing" | "contextualizing" | "planning" | "planned" | "awaiting_approval" | "executing" | "mutating" | "verifying" | "reviewing" | "repairing" | "replanning" | "paused" | "completed" | "failed" | "cancelled";
   createdAt: string;
   completedAt?: string;
 }

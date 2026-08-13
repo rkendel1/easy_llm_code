@@ -28,6 +28,7 @@ import type { RoutingDecision, RoutingFallback } from "../routing/decision.js";
 import type { SuccessfulPattern } from "./successful-patterns.js";
 import type { FailurePattern } from "./failure-patterns.js";
 import type { ActualChange, ChangePattern, ImpactPrediction, PredictionOutcome } from "../change-intelligence/types.js";
+import type { AssumptionCheck, AutonomousExecution, ExecutionDecision, ExecutionPattern, ReviewResult } from "../autonomy/types.js";
 
 export interface ProjectMemory {
   initialize(project: Project): Promise<void>;
@@ -84,11 +85,13 @@ export interface ProjectMemory {
   listFailurePatterns(): Promise<FailurePattern[]>;
   persistRoutingDecision(decision: RoutingDecision): Promise<void>;
   getRoutingDecision(taskId: string): Promise<RoutingDecision | undefined>;
+  getRoutingDecisions(taskId: string): Promise<RoutingDecision[]>;
   listRoutingDecisions(): Promise<RoutingDecision[]>;
   persistRoutingFallback(fallback: RoutingFallback): Promise<void>;
   getRoutingFallbacks(taskId: string): Promise<RoutingFallback[]>;
   persistImpactPrediction(prediction: ImpactPrediction): Promise<void>;
   getImpactPrediction(taskId: string): Promise<ImpactPrediction | undefined>;
+  getImpactPredictionById(predictionId: string): Promise<ImpactPrediction | undefined>;
   listImpactPredictions(): Promise<ImpactPrediction[]>;
   persistActualChange(change: ActualChange): Promise<void>;
   getActualChange(taskId: string): Promise<ActualChange | undefined>;
@@ -97,6 +100,16 @@ export interface ProjectMemory {
   listPredictionOutcomes(): Promise<PredictionOutcome[]>;
   persistChangePattern(pattern: ChangePattern): Promise<void>;
   listChangePatterns(): Promise<ChangePattern[]>;
+  persistAutonomousExecution(execution: AutonomousExecution): Promise<void>;
+  getAutonomousExecution(taskId: string): Promise<AutonomousExecution | undefined>;
+  persistExecutionDecision(decision: ExecutionDecision): Promise<void>;
+  getExecutionDecisions(taskId: string): Promise<ExecutionDecision[]>;
+  persistAssumptionCheck(check: AssumptionCheck): Promise<void>;
+  getAssumptionChecks(taskId: string): Promise<AssumptionCheck[]>;
+  persistReviewResult(review: ReviewResult): Promise<void>;
+  getReviewResults(taskId: string): Promise<ReviewResult[]>;
+  persistExecutionPattern(pattern: ExecutionPattern): Promise<void>;
+  listExecutionPatterns(): Promise<ExecutionPattern[]>;
   subscribeToProjectChanges(listener: (event: ProjectChangeEvent) => void): () => void;
   queryContext(query: ContextQuery): Promise<ContextBundle>;
 }

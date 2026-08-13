@@ -14,7 +14,7 @@ export const explainRoutingDecision = (decision: RoutingDecision): string => {
 };
 
 export const explainTask = async (memory: ProjectMemory, taskId: string): Promise<string> => {
-  const [decision, fallbacks, contextOutcomes, outcome, verificationRuns, failures, impact, predictionOutcomes] = await Promise.all([memory.getRoutingDecision(taskId), memory.getRoutingFallbacks(taskId), memory.listContextOutcomes(taskId), memory.getTaskOutcome(taskId), memory.getVerificationRuns(taskId), memory.listFailurePatterns(), memory.getImpactPrediction(taskId), memory.getPredictionOutcomes(taskId)]);
+  const [decision, fallbacks, contextOutcomes, outcome, verificationRuns, failures, impact, predictionOutcomes, executionDecisions, assumptionChecks, reviews] = await Promise.all([memory.getRoutingDecision(taskId), memory.getRoutingFallbacks(taskId), memory.listContextOutcomes(taskId), memory.getTaskOutcome(taskId), memory.getVerificationRuns(taskId), memory.listFailurePatterns(), memory.getImpactPrediction(taskId), memory.getPredictionOutcomes(taskId), memory.getExecutionDecisions(taskId), memory.getAssumptionChecks(taskId), memory.getReviewResults(taskId)]);
   if (!decision) return `No routing decision recorded for task ${taskId}.`;
   return [explainRoutingDecision(decision), `Outcome: ${outcome?.status ?? "pending"}${outcome ? `, ${outcome.attempts} attempt(s), verification ${outcome.verificationPassed ? "passed" : "failed"}` : ""}`,
     contextOutcomes.length ? `Context: ${contextOutcomes.map((item) => `${item.strategy}=${item.selectedItems}`).join(", ")}` : "Context: no outcome attribution recorded",
@@ -23,5 +23,8 @@ export const explainTask = async (memory: ProjectMemory, taskId: string): Promis
     `Historical repair evidence: ${rankFailurePatterns(failures, { taskType: decision.profile.taskType, subsystem: decision.profile.subsystem }).filter((item) => item.taskId !== taskId).slice(0, 3).map((item) => `Task ${item.taskId}: ${item.description}${item.repair ? ` (${item.repair})` : ""}`).join("; ") || "none"}`,
     impact ? `Predicted change impact: ${impact.affectedFiles.map((item) => `${item.path} ${Math.round(item.confidence * 100)}% [${item.evidence.map((entry) => entry.description).join("; ")}]`).join(" | ") || "none"}` : "Predicted change impact: not recorded",
     impact?.assessment.decisions.length ? `Planner impact decisions: ${impact.assessment.decisions.map((item) => `${item.path}: ${item.decision} — ${item.reason}`).join(" | ")}` : "Planner impact decisions: none",
-    predictionOutcomes.length ? `Prediction outcomes: ${predictionOutcomes.map((item) => `${item.file}: ${item.classification}`).join(", ")}` : "Prediction outcomes: pending or not applicable"].join("\n");
+    predictionOutcomes.length ? `Prediction outcomes: ${predictionOutcomes.map((item) => `${item.file}: ${item.classification}`).join(", ")}` : "Prediction outcomes: pending or not applicable",
+    executionDecisions.length ? `Execution decisions: ${executionDecisions.map((item) => `${item.iteration} ${item.action} (${item.reason})`).join(" → ")}` : "Execution decisions: none",
+    assumptionChecks.length ? `Assumptions: ${assumptionChecks.map((item) => `${item.assumption.id}=${item.assumption.status}`).join(", ")}` : "Assumptions: none",
+    reviews.length ? `Reviews: ${reviews.map((item) => `${item.iteration}=${item.status}`).join(", ")}` : "Reviews: none"].join("\n");
 };

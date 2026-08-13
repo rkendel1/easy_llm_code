@@ -23,6 +23,7 @@ export * from "./routing/index.js";
 export * from "./memory/successful-patterns.js";
 export * from "./memory/failure-patterns.js";
 export * from "./change-intelligence/index.js";
+export * from "./autonomy/index.js";
 export * from "./agent/types.js";
 export * from "./agent/create-agent.js";
 export * from "./agent/run-task.js";

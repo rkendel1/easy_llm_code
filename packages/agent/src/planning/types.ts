@@ -9,7 +9,7 @@ export interface PlanStep {
 export interface Risk { id: string; description: string; severity: "low" | "medium" | "high"; evidence: string[] }
 export interface VerificationStep { id: string; description: string; target?: string; evidence: string[] }
 export interface AgentPlan {
-  id: string; taskId: string; objective: string; assumptions: string[]; steps: PlanStep[];
+  id: string; taskId: string; objective: string; assumptions: (string | import("../autonomy/types.js").PlanAssumption)[]; steps: PlanStep[];
   risks: Risk[]; expectedFiles: string[]; verification: VerificationStep[];
   impactAssessment?: import("../change-intelligence/types.js").ImpactAssessment;
 }
