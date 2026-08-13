@@ -9,6 +9,7 @@
   "scripts": {
     "build": "npm run build -w @easy-llm/code-ide && npm run build -w @easy-llm/code-agent",
     "test": "npm run test -w @easy-llm/code-agent",
-    "code": "npm run code -w @easy-llm/code-agent --"
+    "code": "npm run code -w @easy-llm/code-agent --",
+    "build:native": "sh distribution/build-native.sh"
   }
 }

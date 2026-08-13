@@ -1,11 +1,14 @@
 {
   "name": "@easy-llm/code-agent",
-  "private": true,
+  "private": false,
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": ["dist", "README.md"],
+  "engines": { "node": ">=20" },
   "bin": {
+    "easy-llm-code": "dist/cli/main.js",
     "llm-code": "dist/cli/main.js"
   },
   "exports": {

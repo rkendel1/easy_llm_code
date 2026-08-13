@@ -72,7 +72,8 @@ describe("PR6 autonomous task lifecycle certification", () => {
 
   it("produces equivalent lifecycle decisions for identical state", async () => {
     const decisions: string[][] = [];
-    for (let run = 0; run < 2; run++) { const setup = await fixture(), types: string[] = []; const runner = createTaskRunner({ ...setup, plannerLlm, mutationLlm: mutation(GOOD, "good") }); runner.subscribe((event) => types.push(event.type)); await runner.run({ request: "Fix value", mode: "auto" }); decisions.push(types); }
+    const observational = new Set(["process.started", "process.exited"]);
+    for (let run = 0; run < 2; run++) { const setup = await fixture(), types: string[] = []; const runner = createTaskRunner({ ...setup, plannerLlm, mutationLlm: mutation(GOOD, "good") }); runner.subscribe((event) => { if (!observational.has(event.type)) types.push(event.type); }); await runner.run({ request: "Fix value", mode: "auto" }); decisions.push(types); }
     expect(decisions[1]).toEqual(decisions[0]);
   });
 

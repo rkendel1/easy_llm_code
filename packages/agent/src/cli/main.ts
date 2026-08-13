@@ -30,7 +30,9 @@ import { createIDERegistry } from "../ide/registry.js";
 import { readIDEConfiguration, resolveIDESelection, writeIDEConfiguration } from "../ide/config.js";
 import { startRuntimeServer } from "../ide/runtime-server.js";
 import { onboardProject, getWorkspaceStatus, openProjectMemory, inferWorkspaceTaskMode, createProgressProjector, renderCompletion, renderContinuation, renderProgress, renderWelcome, renderWorkspaceStatus } from "../workspace/index.js";
-import { readProjectConfig, updateProjectSetting } from "../config/project-config.js";
+import { readProjectConfig, resetProjectConfig, updateProjectSetting } from "../config/project-config.js";
+import { applyAutomaticUpdate, applyNativeUpdate, checkForUpdate, diagnoseInstallation, PRODUCT_NAME, PRODUCT_VERSION, renderDoctor, rollbackNativeUpdate } from "../installation/index.js";
+import { installIDEIntegration, parseSetupDeepLink } from "../ide/setup.js";
 import type { TaskRunResult } from "../task/runner.js";
 
 const args = process.argv.slice(2);
@@ -49,7 +51,7 @@ let root = resolve(invocationCwd, rootArg ? rootArg.slice("--root=".length) : pr
 
 const optionsWithValues = new Set(["--model", "--budget", "--type", "--task", "--ide", "--port", "--confirm"]);
 const positional = args.filter((arg, index) => !arg.startsWith("--") && !optionsWithValues.has(args[index - 1] ?? ""));
-const requestArg = positional[0];
+let requestArg: string | undefined = positional[0];
 
 const printDoctor = async (memory: ReturnType<typeof createFeltDBProjectMemory>): Promise<void> => {
   const capabilities = await memory.getCapabilities(), project = await memory.getProject(), summary = await memory.getSummary(), graph = await memory.getGraphStatistics(), status = await memory.getStatus();
@@ -91,10 +93,14 @@ const printMemory = async (memory: ReturnType<typeof createFeltDBProjectMemory>)
 };
 
 const main = async (): Promise<void> => {
+  if (args.includes("--version") || args.includes("-V")) { console.log(`${PRODUCT_NAME} ${PRODUCT_VERSION}`); return; }
+  if (requestArg === "update" || args.includes("--update")) { if (positional[1] === "rollback") { await rollbackNativeUpdate(); console.log("Restored the previous easy-llm-code runtime."); return; } if (positional[1] === "check") { const result = await checkForUpdate(); console.log(result.status === "current" ? `easy-llm-code ${result.currentVersion} is current.` : `easy-llm-code ${result.latestVersion} is available.`); return; } const result = await applyNativeUpdate({}); console.log(result.status === "updated" ? `easy-llm-code updated\n${result.currentVersion} → ${result.latestVersion}` : result.message ?? (result.status === "current" ? `easy-llm-code ${result.currentVersion} is current.` : `Update ${result.latestVersion} is available.`)); return; }
+  if (requestArg?.startsWith("easy-llm-code://")) { const link = parseSetupDeepLink(requestArg); if (link.project) root = resolve(link.project); if (link.ide) { const configuration = await readIDEConfiguration(); await writeIDEConfiguration({ ...configuration, selectedIDE: link.ide }); } requestArg = undefined; }
   if (requestArg === "ide") {
     const registry = createIDERegistry(), detected = await registry.detect(), available = registry.list(), action = positional[1] ?? (input.isTTY && output.isTTY ? "select" : "status");
     if (action === "detect") { const value = detected.map(({ adapter, detection }) => ({ id: adapter.id, name: adapter.name, ...detection })); if (jsonMode) console.log(JSON.stringify(value, null, 2)); else { console.log("Detected IDEs"); for (const item of value) console.log(`${item.detected ? "✓" : "○"} ${item.name}${item.path ? `\n  ${item.path}` : ""}`); } return; }
-    if (action === "use") { const id = positional[2]; if (!id) throw new Error("Usage: llm-code ide use <ide>"); registry.get(id); const configuration = await readIDEConfiguration(); await writeIDEConfiguration({ ...configuration, selectedIDE: id }); console.log(jsonMode ? JSON.stringify({ selectedIDE: id }) : `Selected IDE: ${registry.get(id).name}`); return; }
+    if (action === "use") { const id = positional[2]; if (!id) throw new Error("Usage: easy-llm-code ide use <ide>"); registry.get(id); const configuration = await readIDEConfiguration(); await writeIDEConfiguration({ ...configuration, selectedIDE: id }); console.log(jsonMode ? JSON.stringify({ selectedIDE: id }) : `Selected IDE: ${registry.get(id).name}`); return; }
+    if (action === "install") { const id = positional[2] ?? detected.find((item) => item.detection.detected)?.adapter.id; if (!id) throw new Error("No supported IDE detected. Use: easy-llm-code ide install <cursor|vscode|zed>"); const result = await installIDEIntegration(id); console.log(jsonMode ? JSON.stringify(result) : result.detail); return; }
     if (action === "select") { const choices = available.map((adapter, index) => `${index + 1}. ${adapter.name}`).join("\n"), terminal = createInterface({ input, output }); try { const answer = await terminal.question(`🧩 IDE Integration\n${choices}\nSelect IDE: `), selected = available[Number(answer) - 1] ?? available.find((adapter) => adapter.id === answer.trim()); if (!selected) throw new Error(`Unknown IDE selection: ${answer}`); const configuration = await readIDEConfiguration(); await writeIDEConfiguration({ ...configuration, selectedIDE: selected.id }); console.log(`Selected IDE: ${selected.name}`); } finally { terminal.close(); } return; }
     const selection = await resolveIDESelection({ projectRoot: root, detected: detected.filter((item) => item.detection.detected).map((item) => item.adapter.id) }), selected = selection.id ? registry.get(selection.id) : undefined;
     if (action === "capabilities") { const value = selected ? { id: selected.id, capabilities: selected.capabilities } : { id: undefined, capabilities: {} }; console.log(jsonMode ? JSON.stringify(value, null, 2) : selected ? `${selected.name}\n${Object.entries(selected.capabilities).map(([key, value]) => `  ${value ? "✓" : "○"} ${key}${value === "limited" ? " (limited)" : ""}`).join("\n")}` : "No IDE selected or detected."); return; }
@@ -109,8 +115,8 @@ const main = async (): Promise<void> => {
   }
   const { memory } = await openProjectMemory(project);
 
-  if (requestArg === "doctor") { await printDoctor(memory); return; }
-  if (requestArg === "settings") { if (positional[1] === "set") { const key = positional[2], value = positional[3]; if (!key || value === undefined) throw new Error("Usage: llm-code settings set <key> <value>"); console.log(JSON.stringify(await updateProjectSetting(project.id, key, value), null, 2)); } else console.log(JSON.stringify(await readProjectConfig(project.id), null, 2)); return; }
+  if (requestArg === "doctor") { const report = await diagnoseInstallation(project, memory); console.log(jsonMode ? JSON.stringify(report, null, 2) : renderDoctor(report)); if (!report.ready) process.exitCode = 1; return; }
+  if (requestArg === "settings" || requestArg === "reset") { if (positional[1] === "set") { const key = positional[2], value = positional[3]; if (!key || value === undefined) throw new Error("Usage: easy-llm-code settings set <key> <value>"); console.log(JSON.stringify(await updateProjectSetting(project.id, key, value), null, 2)); } else if (positional[1] === "reset" || requestArg === "reset") { if (!args.includes("--yes")) throw new Error("SETTINGS_RESET_CONFIRMATION_REQUIRED: pass --yes"); console.log(JSON.stringify(await resetProjectConfig(project.id), null, 2)); } else console.log(JSON.stringify(await readProjectConfig(project.id), null, 2)); return; }
   if (requestArg === "memory" && positional[1] === "status") { const status = await memory.getStatus(); if (jsonMode) console.log(JSON.stringify(status, null, 2)); else console.log(`Project Memory\n──────────────────────────────\nProject\n  ${project.name} (${status.projectId})\nStorage\n  ${status.provider}\nPersistence\n  ${status.capabilities.persistent ? "✓" : "✗"} persistent\n  ${status.capabilities.crossProcess ? "✓" : "✗"} cross-process\nGraph\n${Object.entries(status.statistics.nodes).map(([name, count]) => `  ${name.padEnd(14)} ${count}`).join("\n")}\nLast indexed\n  ${status.lastIndexedAt ?? "never"}\nLast task\n  ${status.lastTaskId ?? "none"}\nSync\n  ${status.sync.status}`); return; }
   if (requestArg === "memory" && positional[1] === "sync") { const state = await memory.sync(); console.log(jsonMode ? JSON.stringify(state) : `Memory sync: ${state.status} (${state.pendingChanges} pending, ${state.conflicts} conflicts)`); return; }
   if (requestArg === "memory" && positional[1] === "export") { console.log(JSON.stringify(await memory.exportMemory(), null, 2)); return; }
@@ -294,6 +300,7 @@ const main = async (): Promise<void> => {
       if (input.isTTY && output.isTTY) workspaceRuntime = await startRuntimeServer({ root, memory });
       const config = await readProjectConfig(project.id), status = await getWorkspaceStatus(project, config, memory); console.log(renderWelcome(onboarding)); console.log(renderWorkspaceStatus(status)); console.log(renderContinuation(status));
       if (!input.isTTY || !output.isTTY) return;
+      void applyAutomaticUpdate().then((result) => { if (result?.status === "updated") console.log(`\neasy-llm-code updated in the background\n${result.currentVersion} → ${result.latestVersion}\nThe new runtime will be used next launch.`); }).catch(() => undefined);
       while (true) {
         const next = (await rl.question("\nWhat would you like to change?\n> ")).trim(); if (!next) continue; if (["/exit", "/quit", "exit", "quit"].includes(next.toLowerCase())) return;
         if (next === "/status") { console.log(renderWorkspaceStatus(await getWorkspaceStatus(project, await readProjectConfig(project.id), memory))); continue; }
@@ -309,4 +316,4 @@ const main = async (): Promise<void> => {
   await executeLifecycle(request ?? "", configuredMode ?? inferWorkspaceTaskMode(request ?? ""));
 };
 
-await main();
+void main().catch((error) => { console.error((error as Error).message); process.exitCode = 1; });

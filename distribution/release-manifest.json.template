@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "version": "__VERSION__",
+  "publishedAt": "__PUBLISHED_AT__",
+  "artifacts": {
+    "darwin-arm64": { "url": "__BASE_URL__/__VERSION__/easy-llm-code-darwin-arm64", "sha256": "__DARWIN_ARM64_SHA256__", "size": __DARWIN_ARM64_SIZE__ },
+    "darwin-x64": { "url": "__BASE_URL__/__VERSION__/easy-llm-code-darwin-x64", "sha256": "__DARWIN_X64_SHA256__", "size": __DARWIN_X64_SIZE__ },
+    "linux-arm64": { "url": "__BASE_URL__/__VERSION__/easy-llm-code-linux-arm64", "sha256": "__LINUX_ARM64_SHA256__", "size": __LINUX_ARM64_SIZE__ },
+    "linux-x64": { "url": "__BASE_URL__/__VERSION__/easy-llm-code-linux-x64", "sha256": "__LINUX_X64_SHA256__", "size": __LINUX_X64_SIZE__ },
+    "win32-x64": { "url": "__BASE_URL__/__VERSION__/easy-llm-code-win32-x64.exe", "sha256": "__WIN32_X64_SHA256__", "size": __WIN32_X64_SIZE__ }
+  }
+}

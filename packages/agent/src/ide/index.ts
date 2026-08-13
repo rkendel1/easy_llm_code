@@ -7,3 +7,4 @@ export * from "./adapters/cursor.js";
 export * from "./adapters/zed.js";
 export * from "./protocol.js";
 export * from "./runtime-server.js";
+export * from "./setup.js";

@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-export interface UserConfig { version: 1; selectedIDEInstallations: Record<string, string>; preferredIDE?: string; vaultConfigured: boolean }
+export interface UserConfig { version: 1; selectedIDEInstallations: Record<string, string>; preferredIDE?: string; vaultConfigured: boolean; installation?: { kind: "native" | "homebrew" | "npm" | "development" | "unknown"; installedAt?: string; lastUpdateCheckAt?: string } }
 export const DEFAULT_USER_CONFIG: UserConfig = { version: 1, selectedIDEInstallations: {}, vaultConfigured: false };
 export const userConfigPath = (): string => process.env.EASY_LLM_CODE_USER_CONFIG ?? join(homedir(), ".config", "easy-llm-code", "user.json");
-export const readUserConfig = async (): Promise<UserConfig> => { try { return { ...DEFAULT_USER_CONFIG, ...JSON.parse(await readFile(userConfigPath(), "utf8")) }; } catch { return DEFAULT_USER_CONFIG; } };
+export const legacyUserConfigPath = (): string => join(homedir(), ".config", "llm-code", "user.json");
+export const readUserConfig = async (): Promise<UserConfig> => { try { return { ...DEFAULT_USER_CONFIG, ...JSON.parse(await readFile(userConfigPath(), "utf8")) }; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT" && !process.env.EASY_LLM_CODE_USER_CONFIG) { try { const migrated = { ...DEFAULT_USER_CONFIG, ...JSON.parse(await readFile(legacyUserConfigPath(), "utf8")) }; await writeUserConfig(migrated); return migrated; } catch {} } return DEFAULT_USER_CONFIG; } };
 export const writeUserConfig = async (value: UserConfig): Promise<void> => { const path = userConfigPath(), temporary = `${path}.${randomUUID()}.tmp`; await mkdir(dirname(path), { recursive: true, mode: 0o700 }); await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }); await chmod(temporary, 0o600); await rename(temporary, path); };
+export const resetUserConfig = async (): Promise<UserConfig> => { await writeUserConfig(DEFAULT_USER_CONFIG); return DEFAULT_USER_CONFIG; };

@@ -6,7 +6,7 @@ import type { TaskProfile } from "../intelligence/task-profile.js";
 import type { ComparableOutcome } from "../memory/outcome-retrieval.js";
 import type { RoutingCandidate } from "./decision.js";
 
-const require = createRequire(import.meta.url);
+const require = createRequire(typeof __filename === "string" ? __filename : import.meta.url);
 const supported = (value: boolean | "partial" | undefined): boolean => value === true || value === "partial";
 export const loadRegistryModels = async (): Promise<ModelDefinition[]> => {
   await llm.loadModelRegistryCache().catch(() => undefined);

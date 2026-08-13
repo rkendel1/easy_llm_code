@@ -13,9 +13,10 @@ const memoryModule = pathToFileURL(resolve(process.cwd(), "src/memory/feltdb-pro
 const discoveryModule = pathToFileURL(resolve(process.cwd(), "src/discovery/discover-project.ts")).href;
 
 describe("FeltDB runtime and dependency contract", () => {
-  it("uses the exact providers and remains private", async () => {
+  it("uses the exact providers and exposes the supported npm commands", async () => {
     const manifest = JSON.parse(await readFile(resolve(process.cwd(), "package.json"), "utf8"));
-    expect(manifest.private).toBe(true);
+    expect(manifest.private).toBe(false);
+    expect(manifest.bin).toEqual({ "easy-llm-code": "dist/cli/main.js", "llm-code": "dist/cli/main.js" });
     expect(manifest.dependencies).toEqual({ "@easy-llm/code-ide": "0.1.0", "@easy-llm/llm": "^0.10.0", "@feltdb/core": "0.2.0" });
   });
 

@@ -1,0 +1,17 @@
+cask "easy-llm-code" do
+  version "__VERSION__"
+  on_arm do
+    sha256 "__DARWIN_ARM64_SHA256__"
+    url "__BASE_URL__/#{version}/easy-llm-code-darwin-arm64"
+  end
+  on_intel do
+    sha256 "__DARWIN_X64_SHA256__"
+    url "__BASE_URL__/#{version}/easy-llm-code-darwin-x64"
+  end
+  name "easy-llm-code"
+  desc "Project-aware coding agent"
+  homepage "https://easy-llm.dev"
+  binary "easy-llm-code-darwin-#{Hardware::CPU.arm? ? "arm64" : "x64"}", target: "easy-llm-code"
+  binary "easy-llm-code-darwin-#{Hardware::CPU.arm? ? "arm64" : "x64"}", target: "llm-code"
+  zap trash: ["~/.config/easy-llm-code"]
+end

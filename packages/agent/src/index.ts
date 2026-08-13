@@ -35,6 +35,7 @@ export * from "./autonomy/index.js";
 export * from "./sandbox/index.js";
 export * from "./ide/index.js";
 export * from "./workspace/index.js";
+export * from "./installation/index.js";
 export * from "./config/index.js";
 export * from "./model/index.js";
 export * from "@easy-llm/code-ide";
