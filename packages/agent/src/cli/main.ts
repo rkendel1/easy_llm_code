@@ -148,7 +148,7 @@ const main = async (): Promise<void> => {
   if (requestArg === "serve") {
     const portValue = optionValue("port"), port = portValue === undefined ? 0 : Number(portValue); if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`Invalid port: ${portValue}`);
     const runtime = await startRuntimeServer({ root, memory, port }); const connection = { url: runtime.url, token: runtime.token, sessionId: runtime.sessionId, expiresAt: runtime.expiresAt, workspace: runtime.workspace };
-    console.log(jsonMode ? JSON.stringify(connection) : `easy-llm-code runtime ready\nURL: ${runtime.url}\nSession: ${runtime.sessionId}\nExpires: ${runtime.expiresAt}\nToken: ${runtime.token}`);
+    console.log(jsonMode ? JSON.stringify(connection) : `easy-llm-code runtime ready\nURL: ${runtime.url}\nRoot: ${runtime.workspace.repositoryRoot}\nSession: ${runtime.sessionId}\nExpires: ${runtime.expiresAt}\nToken: ${runtime.token}`);
     await new Promise<void>((resolve) => { runtime.server.once("close", resolve); const stop = () => runtime.server.close(); process.once("SIGINT", stop); process.once("SIGTERM", stop); }); return;
   }
 

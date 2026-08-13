@@ -2,7 +2,7 @@
   "name": "easy-llm-code",
   "displayName": "easy-llm-code",
   "description": "Project-aware coding agent with local memory and automatic model routing.",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "publisher": "easy-llm",
   "repository": { "type": "git", "url": "https://github.com/rkendel1/easy_llm_code.git" },
   "type": "module",

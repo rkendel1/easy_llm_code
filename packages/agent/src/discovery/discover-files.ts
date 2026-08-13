@@ -11,7 +11,8 @@ const IGNORED_DIRS = new Set([
   "coverage",
   ".next",
   ".turbo",
-  "target"
+  "target",
+  ".Trash"
 ]);
 
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
@@ -53,7 +54,7 @@ export const discoverFiles = async (root: string): Promise<ProjectFile[]> => {
   const files: ProjectFile[] = [];
 
   const walk = async (dir: string): Promise<void> => {
-    const entries = await readdir(dir, { withFileTypes: true });
+    const entries = await readdir(dir, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => { if (["EACCES", "EPERM", "ENOENT"].includes(error.code ?? "")) return []; throw error; });
     for (const entry of entries) {
       const absolute = join(dir, entry.name);
       if (entry.isDirectory()) {
@@ -66,7 +67,8 @@ export const discoverFiles = async (root: string): Promise<ProjectFile[]> => {
       if (!entry.isFile() || !shouldInclude(absolute)) {
         continue;
       }
-      const info = await stat(absolute);
+      const info = await stat(absolute).catch((error: NodeJS.ErrnoException) => { if (["EACCES", "EPERM", "ENOENT"].includes(error.code ?? "")) return undefined; throw error; });
+      if (!info) continue;
       const rel = relative(root, absolute).replace(/\\/g, "/");
       const ext = extension(rel);
       files.push({
@@ -74,7 +76,7 @@ export const discoverFiles = async (root: string): Promise<ProjectFile[]> => {
         path: rel,
         language: LANGUAGE_BY_EXTENSION[ext],
         size: info.size,
-        hash: await hashFile(absolute)
+        hash: await hashFile(absolute).catch((error: NodeJS.ErrnoException) => { if (["EACCES", "EPERM", "ENOENT"].includes(error.code ?? "")) return "unreadable"; throw error; })
       });
     }
   };
