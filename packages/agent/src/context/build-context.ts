@@ -18,12 +18,12 @@ export const createContextEngine = (options: ContextEngineOptions) => {
   const weights = { ...DEFAULT_WEIGHTS, ...options.ranking };
   const expansion = { ...DEFAULT_EXPANSION, ...options.expansion };
   return {
-    async build(input: { request: string; policy?: ContextPolicy }): Promise<IntelligentContextBundle> {
+    async build(input: { request: string; policy?: ContextPolicy; preferredFiles?: string[] }): Promise<IntelligentContextBundle> {
       const effectiveBudget = { ...budget, ...input.policy?.budget };
       if (input.policy?.target?.contextWindow && effectiveBudget.maxTokens === undefined) {
         effectiveBudget.maxTokens = Math.floor(input.policy.target.contextWindow * 0.5);
       }
-      const discovered = await generateContextCandidates({ request: input.request, memory: options.memory });
+      const discovered = await generateContextCandidates({ request: input.request, memory: options.memory, preferredFiles: input.preferredFiles });
       const candidates = expandContextGraph(discovered, expansion);
       const ranked = rankContextItems(candidates, weights);
       const items = selectWithinBudget(ranked, effectiveBudget);

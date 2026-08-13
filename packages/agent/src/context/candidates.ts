@@ -8,10 +8,11 @@ const ageScore = (timestamp: string, newestTimestamp: number): number =>
   Math.max(0, 1 - (newestTimestamp - Date.parse(timestamp)) / (365 * 86400000));
 const safeRead = async (root: string, path: string): Promise<string> => { try { return await readFile(join(root, path), "utf8"); } catch { return ""; } };
 
-export const generateContextCandidates = async ({ request, memory }: { request: string; memory: ProjectMemory }): Promise<ContextItem[]> => {
+export const generateContextCandidates = async ({ request, memory, preferredFiles = [] }: { request: string; memory: ProjectMemory; preferredFiles?: string[] }): Promise<ContextItem[]> => {
   const project = await memory.getProject();
+  const preferred = [...new Set(preferredFiles)].filter(Boolean);
   const [current, history] = await Promise.all([
-    memory.queryContext({ text: request, limit: 50 }),
+    memory.queryContext({ text: [request, ...preferred].join("\n"), limit: 50 }),
     memory.getRelatedChanges({ text: request, limit: 20 })
   ]);
   const candidates = new Map<string, ContextItem>();
@@ -22,6 +23,14 @@ export const generateContextCandidates = async ({ request, memory }: { request: 
     if (!prior) { candidates.set(item.id, item); return; }
     for (const key of Object.keys(item.reason) as (keyof ContextItem["reason"])[]) prior.reason[key] = Math.max(prior.reason[key], item.reason[key]);
   };
+
+  await Promise.all(preferred.map(async (path, index) => {
+    const content = await safeRead(project.root, path);
+    if (!content) return;
+    const reason = emptyReason(); reason.lexical = 1; reason.structural = index === 0 ? 1 : 0.5;
+    put({ id: `file:${path}`, type: /(^|\/)test|\.test\./i.test(path) ? "test" : "file", reference: path,
+      score: 0, reason, content, metadata: { path, sourceReason: "active editor context" } });
+  }));
 
   await Promise.all(current.files.map(async (file) => {
     const content = await safeRead(project.root, file.path);

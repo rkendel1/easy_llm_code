@@ -9,6 +9,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const runtime = new ExtensionRuntime(executable, (snapshot) => provider?.publishSnapshot(snapshot), (event) => provider?.publishEvent(event), (message) => { if (message) output.appendLine(message); });
   provider = new SidebarProvider(context.extensionUri, runtime, output, async () => {
     const root = selectedProjectStart(); if (!root) throw new Error("Open a project folder or source file before starting easy-llm-code."); await runtime.start(root);
+    if (!runtime.current().status?.project.indexed) {
+      const choice = await vscode.window.showInformationMessage("This project has not been indexed. Index it now so easy-llm-code can answer with repository context?", "Index Project", "Not Now");
+      if (choice === "Index Project") await runtime.indexProject();
+    }
   });
   context.subscriptions.push(output, provider, vscode.window.registerWebviewViewProvider("easyLlmCode.chat", provider, { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.commands.registerCommand("easyLlmCode.open", () => vscode.commands.executeCommand("workbench.view.extension.easyLlmCode")),
@@ -20,5 +24,5 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 const shellQuote = (value: string): string => process.platform === "win32" ? `"${value.replaceAll('"', '""')}"` : `'${value.replaceAll("'", `'\\''`)}'`;
-const selectedProjectStart = (): string | undefined => { const active = vscode.window.activeTextEditor?.document.uri; if (active?.scheme === "file") return dirname(active.fsPath); return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath; };
+const selectedProjectStart = (): string | undefined => { const active = vscode.window.activeTextEditor?.document.uri; if (active?.scheme === "file") return vscode.workspace.getWorkspaceFolder(active)?.uri.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? dirname(active.fsPath); return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath; };
 export function deactivate(): void {}
