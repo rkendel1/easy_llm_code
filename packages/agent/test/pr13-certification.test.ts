@@ -9,7 +9,7 @@ import { DEFAULT_PROJECT_CONFIG, projectConfigPath, readProjectConfig } from "..
 import { onboardProject } from "../src/workspace/onboarding.js";
 import { getWorkspaceStatus } from "../src/workspace/status.js";
 import { createProgressProjector } from "../src/workspace/progress.js";
-import { inferWorkspaceTaskMode } from "../src/workspace/task-mode.js";
+import { inferWorkspaceTaskMode, isWorkspaceExitIntent } from "../src/workspace/task-mode.js";
 import { createTaskRunner } from "../src/task/runner.js";
 import { startRuntimeServer } from "../src/ide/runtime-server.js";
 import { RuntimeClient } from "@easy-llm/code-ide";
@@ -48,6 +48,12 @@ describe("PR13 coding workspace and onboarding certification", () => {
     expect(inferWorkspaceTaskMode("Why does user creation return null?")).toBe("ask");
     expect(inferWorkspaceTaskMode("Fix the failing authentication tests")).toBe("auto");
     expect(inferWorkspaceTaskMode("Add pagination to users")).toBe("auto");
+  });
+
+  it("treats conversational no-op answers as workspace exit intents", () => {
+    expect(isWorkspaceExitIntent("nothing")).toBe(true);
+    expect(isWorkspaceExitIntent("No thanks.")).toBe(true);
+    expect(isWorkspaceExitIntent("do nothing to the auth module")).toBe(false);
   });
 
   it("projects detailed runtime events into a compact human progress model", () => {

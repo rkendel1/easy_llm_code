@@ -29,7 +29,7 @@ import { LocalProcessSandboxProvider } from "../sandbox/providers/local/local-pr
 import { createIDERegistry } from "../ide/registry.js";
 import { readIDEConfiguration, resolveIDESelection, writeIDEConfiguration } from "../ide/config.js";
 import { startRuntimeServer } from "../ide/runtime-server.js";
-import { onboardProject, getWorkspaceStatus, openProjectMemory, inferWorkspaceTaskMode, createProgressProjector, renderCompletion, renderContinuation, renderProgress, renderWelcome, renderWorkspaceStatus } from "../workspace/index.js";
+import { onboardProject, getWorkspaceStatus, openProjectMemory, inferWorkspaceTaskMode, isWorkspaceExitIntent, createProgressProjector, renderCompletion, renderContinuation, renderProgress, renderWelcome, renderWorkspaceStatus } from "../workspace/index.js";
 import { readProjectConfig, resetProjectConfig, updateProjectSetting } from "../config/project-config.js";
 import { applyAutomaticUpdate, applyNativeUpdate, checkForUpdate, diagnoseInstallation, PRODUCT_NAME, PRODUCT_VERSION, renderDoctor, rollbackNativeUpdate } from "../installation/index.js";
 import { installIDEIntegration, parseSetupDeepLink } from "../ide/setup.js";
@@ -167,7 +167,7 @@ const main = async (): Promise<void> => {
       approval: async (input) => args.includes("--yes") ? "approved" : input.mode === "auto" ? "approved" : terminalApproval(input),
       routing: { model: modelOption ?? (workspaceConfig.model.mode === "explicit" ? workspaceConfig.model.model : "auto"), budget: budgetOption }, autonomy: { mode: configuredAutonomy, budget: budgetOption === undefined ? undefined : { maxModelSpend: budgetOption } }
     });
-    const progress = createProgressProjector(); runner.subscribe((event) => { if (workspaceUX) { const rendered = renderProgress(progress.update(event)); if (rendered) console.log(rendered); } else console.log(jsonMode ? JSON.stringify(event) : renderAgentEvent(event)); });
+    const progress = createProgressProjector(); let lastRenderedProgress = ""; runner.subscribe((event) => { if (workspaceUX) { const rendered = renderProgress(progress.update(event)); if (rendered && rendered !== lastRenderedProgress) { console.log(rendered); lastRenderedProgress = rendered; } } else console.log(jsonMode ? JSON.stringify(event) : renderAgentEvent(event)); });
     const onInterrupt = (): void => runner.cancel(); process.once("SIGINT", onInterrupt);
     try {
       const result = resumeId ? await runner.resume(resumeId) : await runner.run({ request: request ?? "", mode });
@@ -302,7 +302,7 @@ const main = async (): Promise<void> => {
       if (!input.isTTY || !output.isTTY) return;
       void applyAutomaticUpdate().then((result) => { if (result?.status === "updated") console.log(`\neasy-llm-code updated in the background\n${result.currentVersion} → ${result.latestVersion}\nThe new runtime will be used next launch.`); }).catch(() => undefined);
       while (true) {
-        const next = (await rl.question("\nWhat would you like to change?\n> ")).trim(); if (!next) continue; if (["/exit", "/quit", "exit", "quit"].includes(next.toLowerCase())) return;
+        const next = (await rl.question("\nWhat would you like to change?\n> ")).trim(); if (!next) continue; if (isWorkspaceExitIntent(next)) { console.log("No changes requested."); return; }
         if (next === "/status") { console.log(renderWorkspaceStatus(await getWorkspaceStatus(project, await readProjectConfig(project.id), memory))); continue; }
         if (next === "/settings") { console.log(JSON.stringify(await readProjectConfig(project.id), null, 2)); continue; }
         if (next.startsWith("/settings ")) { const assignment = next.slice(10), separator = assignment.indexOf("="); if (separator < 1) { console.log("Use /settings key=value"); continue; } console.log(JSON.stringify(await updateProjectSetting(project.id, assignment.slice(0, separator).trim(), assignment.slice(separator + 1).trim()), null, 2)); continue; }
