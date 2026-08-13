@@ -13,6 +13,8 @@ export * from "./context/index.js";
 export * from "./planning/index.js";
 export * from "./tools/index.js";
 export * from "./execution/index.js";
+export * from "./mutation/index.js";
+export * from "./verification/index.js";
 export * from "./agent/types.js";
 export * from "./agent/create-agent.js";
 export * from "./agent/run-task.js";

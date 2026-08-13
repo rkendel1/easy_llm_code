@@ -6,6 +6,9 @@ import type { ContextBudget, ExpansionPolicy, RankingWeights } from "../context/
 import { createTaskPlanner, type PlannerLlm } from "../planning/planner.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { ToolPolicy } from "../tools/types.js";
+import { createMutationPlanner, type MutationLlm } from "../mutation/planner.js";
+import type { MutationPolicy } from "../mutation/types.js";
+import { createMutationExecutor } from "../execution/mutation-executor.js";
 import { parseAgentAnalysis, runTask } from "./run-task.js";
 import type { AgentRunRequest, AgentRunResult, LlmExecutor } from "./types.js";
 
@@ -17,6 +20,8 @@ interface CreateCodeAgentOptions {
   plannerLlm?: PlannerLlm;
   tools?: ToolRegistry;
   toolPolicy?: ToolPolicy;
+  mutationLlm?: MutationLlm;
+  mutationPolicy?: MutationPolicy;
 }
 
 const toPrompt = (task: string, context: unknown): string =>
@@ -69,9 +74,16 @@ export const createCodeAgent = (options: CreateCodeAgentOptions) => {
   const llm = options.llm ?? executeWithDefaultLlm;
   const contextEngine = createContextEngine({ memory: options.memory, ...options.context });
   const planner = createTaskPlanner({ root: options.root, memory: options.memory, contextEngine, llm: options.plannerLlm, registry: options.tools, policy: options.toolPolicy });
+  const mutationPlanner = createMutationPlanner({ root: options.root, memory: options.memory, llm: options.mutationLlm });
 
   return {
     plan: (request: AgentRunRequest) => planner.plan(request.request),
+    proposeMutation: (plan: import("../planning/types.js").AgentPlan, context: import("../context/types.js").IntelligentContextBundle) => mutationPlanner.propose(plan, context),
+    applyMutation: async (proposal: import("../mutation/types.js").MutationProposal, plan: import("../planning/types.js").AgentPlan, approved = false) => {
+      const project = await options.memory.getProject();
+      return createMutationExecutor({ root: options.root, project, memory: options.memory, mutationPolicy: options.mutationPolicy,
+        repair: async (failure) => mutationPlanner.propose(plan, await contextEngine.build({ request: `${plan.objective}\nRepair verification failure: ${failure.results.map((result) => result.classification ?? result.status).join(", ")}` }), failure) }).execute({ proposal, plan, approved });
+    },
     run: async (request: AgentRunRequest): Promise<AgentRunResult> =>
       runTask(
         {

@@ -8,6 +8,10 @@ import { indexProjectIntoMemory } from "../indexing/index-project.js";
 import { createFeltDBProjectMemory } from "../memory/feltdb-project-memory.js";
 import { ingestRepositoryHistory } from "../history/ingest-history.js";
 import { createContextEngine } from "../context/build-context.js";
+import { gitDiffTool } from "../tools/builtin/git-diff.js";
+import { detectVerificationCommands } from "../verification/policy.js";
+import { runVerification } from "../verification/runner.js";
+import { patchLineCounts } from "../mutation/patch.js";
 
 const args = process.argv.slice(2);
 const rootArg = args.find((arg) => arg.startsWith("--root="));
@@ -70,6 +74,21 @@ const main = async (): Promise<void> => {
   }
 
   if (requestArg === "memory") { await printMemory(memory); return; }
+  if (requestArg === "diff") {
+    const result = await gitDiffTool.execute({}, { root }); console.log(result.diff || "No working-tree diff."); return;
+  }
+  if (requestArg === "verify") {
+    const commands = await detectVerificationCommands(project);
+    const run = await runVerification(project, "manual-verification", "manual", commands);
+    if (jsonMode) console.log(JSON.stringify(run, null, 2)); else { console.log("Verification"); for (const result of run.results) console.log(`${result.status === "passed" ? "✓" : "✗"} ${result.command}`); if (!run.results.length) console.log("No trusted verification scripts detected."); }
+    if (!run.passed) process.exitCode = 1; return;
+  }
+  if (requestArg === "task" && positional[1]) {
+    const [task, outcome, plan, models, transactions, verifications] = await Promise.all([memory.getTask(positional[1]), memory.getTaskOutcome(positional[1]), memory.findPlanForTask(positional[1]), memory.getModelExecutions(positional[1]), memory.getMutationTransactions(positional[1]), memory.getVerificationRuns(positional[1])]);
+    const value = { task, outcome, plan, models, transactions, verifications }; if (jsonMode) console.log(JSON.stringify(value, null, 2));
+    else if (!task) console.log(`Task ${positional[1]} not found.`); else { const model = models.at(-1); console.log(`Task: ${task.task.request}\nStatus: ${(outcome?.status ?? task.task.status).toUpperCase()}\nModel\n  ${model?.provider ?? "unknown"}/${model?.model ?? "unknown"}${model?.estimatedCost !== undefined ? `\n  $${model.estimatedCost.toFixed(4)}` : ""}\nPlan\n  ${plan?.steps.length ?? 0} steps\nMutation\n  ${outcome?.filesChanged ?? 0} files\n  ${outcome?.linesChanged ?? 0} changed lines\n  ${transactions.at(-1)?.status ?? "none"}\nVerification\n  ${outcome?.verificationPassed ? "✓ passed" : "not passed"}\n  ${verifications.flatMap((run) => run.results).length} command(s)\nAttempts\n  ${outcome?.attempts ?? 0}\nDuration\n  ${outcome?.durationMs ?? 0}ms`); }
+    return;
+  }
   if (requestArg === "context") {
     const request = positional.slice(1).join(" ");
     if (!request) throw new Error("Usage: llm-code context \"your question\"");
@@ -111,6 +130,20 @@ const main = async (): Promise<void> => {
     console.log("Verification"); for (const verification of result.plan.verification) console.log(`  • ${verification.description}`);
     console.log("No files changed."); return;
   }
+  if (requestArg === "apply" && positional[1]) {
+    const plan = await memory.getPlan(positional[1]);
+    if (!plan) throw new Error(`Plan ${positional[1]} not found. Durable FeltDB is required to recover plans across CLI sessions.`);
+    const mutationAgent = createCodeAgent({ root, memory, mutationLlm: mockMode ? async () => ({ id: `mock-proposal:${plan.id}`, taskId: plan.taskId, planId: plan.id, files: [], rationale: "Mock no-op proposal", expectedChanges: [], verification: [] }) : undefined });
+    let proposal = await memory.findMutationForPlan(plan.id);
+    if (!proposal) proposal = await mutationAgent.proposeMutation(plan, await createContextEngine({ memory }).build({ request: plan.objective }));
+    if (!jsonMode) { console.log("Changes"); for (const file of proposal.files) console.log(` ${file.operation === "create" ? "A" : file.operation === "delete" ? "D" : "M"} ${file.path}`); console.log(`Why:\n  ${proposal.rationale}`); }
+    let approved = args.includes("--yes");
+    if (!approved) { const rl = createInterface({ input, output }); const answer = await rl.question(`Apply ${proposal.files.length} proposed file change(s)? [y/N] `); rl.close(); approved = /^y(?:es)?$/i.test(answer.trim()); }
+    if (!approved) { console.log("No files changed."); return; }
+    const result = await mutationAgent.applyMutation(proposal, plan, true);
+    if (jsonMode) console.log(JSON.stringify(result, null, 2)); else console.log(result.outcome.status === "success" ? "Task complete." : `Task failed after ${result.outcome.attempts} attempt(s); changes rolled back.`);
+    return;
+  }
 
   let request = requestArg;
   if (!request) {
@@ -138,6 +171,25 @@ const main = async (): Promise<void> => {
         })
       : undefined
   });
+
+  const mutationIntent = /^(add|change|create|delete|fix|implement|modify|refactor|remove|rename|update)\b/i.test(request ?? "");
+  if (mutationIntent && !mockMode) {
+    const planned = await agent.plan({ request: request ?? "" });
+    const proposal = await agent.proposeMutation(planned.plan, planned.context);
+    const counts = proposal.files.reduce((sum, file) => { const count = patchLineCounts(file.patch); return { additions: sum.additions + count.additions, deletions: sum.deletions + count.deletions }; }, { additions: 0, deletions: 0 });
+    if (!jsonMode) {
+      console.log(`✓ Context selected: ${planned.context.files.length} files\n✓ Plan created\n✓ Mutation proposed\nChanges`);
+      for (const file of proposal.files) console.log(` ${file.operation === "create" ? "A" : file.operation === "delete" ? "D" : "M"} ${file.path}`);
+      console.log(` +${counts.additions} / -${counts.deletions} lines\nWhy:\n  ${proposal.rationale}\nVerification:`);
+      for (const step of proposal.verification) console.log(`  ${step.command}`);
+    }
+    let approved = args.includes("--yes");
+    if (!approved) { const rl = createInterface({ input, output }); const answer = await rl.question("Apply these changes? [y/N] "); rl.close(); approved = /^y(?:es)?$/i.test(answer.trim()); }
+    if (!approved) { console.log("No files changed."); return; }
+    const result = await agent.applyMutation(proposal, planned.plan, true);
+    if (jsonMode) console.log(JSON.stringify(result, null, 2)); else console.log(result.outcome.status === "success" ? "Task complete." : "Task failed; changes rolled back.");
+    return;
+  }
 
   console.log("Searching project memory...");
   const result = await agent.run({ request: request ?? "" });

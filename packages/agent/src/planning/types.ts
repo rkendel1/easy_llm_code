@@ -19,7 +19,7 @@ export interface Evidence {
 export interface ToolRun { id: string; taskId: string; planId: string; stepId?: string; event: ToolEvent; timestamp: string }
 export interface ModelExecution {
   id: string; taskId: string; model?: string; provider?: string; inputTokens?: number; outputTokens?: number;
-  estimatedCost?: number; latencyMs?: number;
+  estimatedCost?: number; latencyMs?: number; phase?: "context" | "planning" | "mutation" | "repair";
 }
 export interface PlanningResult {
   taskId: string; context: IntelligentContextBundle; plan: AgentPlan;

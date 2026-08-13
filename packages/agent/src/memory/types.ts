@@ -51,7 +51,13 @@ export type ProjectRelation =
   | "HAS_CONTEXT"
   | "HAS_PLAN"
   | "PLAN_STEP"
-  | "SUPPORTED_BY";
+  | "SUPPORTED_BY"
+  | "HAS_MUTATION"
+  | "HAS_TRANSACTION"
+  | "VERIFIED_BY"
+  | "REPAIR_OF"
+  | "HAS_OUTCOME";
+
 
 export interface ProjectEdge {
   id: string;

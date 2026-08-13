@@ -19,6 +19,8 @@ import type {
 } from "./types.js";
 import type { CommitRecord, FileChangeRecord, HistoryCursor } from "../history/history-types.js";
 import type { AgentPlan, Evidence, ModelExecution, ToolRun } from "../planning/types.js";
+import type { MutationProposal, MutationTransaction, RepairAttempt, TaskOutcome } from "../mutation/types.js";
+import type { VerificationRun } from "../verification/types.js";
 
 export interface ProjectMemory {
   initialize(project: Project): Promise<void>;
@@ -40,9 +42,21 @@ export interface ProjectMemory {
   getCapabilities(): Promise<MemoryCapabilities>;
   persistPlan(plan: AgentPlan): Promise<void>;
   getPlan(planId: string): Promise<AgentPlan | undefined>;
+  findPlanForTask(taskId: string): Promise<AgentPlan | undefined>;
   recordToolRun(run: ToolRun): Promise<void>;
   recordEvidence(evidence: Evidence, planId: string, stepId?: string): Promise<void>;
   recordModelExecution(execution: ModelExecution): Promise<void>;
+  getModelExecutions(taskId: string): Promise<ModelExecution[]>;
+  persistMutationProposal(proposal: MutationProposal): Promise<void>;
+  getMutationProposal(proposalId: string): Promise<MutationProposal | undefined>;
+  findMutationForPlan(planId: string): Promise<MutationProposal | undefined>;
+  persistMutationTransaction(transaction: MutationTransaction): Promise<void>;
+  getMutationTransactions(taskId: string): Promise<MutationTransaction[]>;
+  persistVerificationRun(run: VerificationRun): Promise<void>;
+  getVerificationRuns(taskId: string): Promise<VerificationRun[]>;
+  persistRepairAttempt(attempt: RepairAttempt): Promise<void>;
+  persistTaskOutcome(taskId: string, outcome: TaskOutcome): Promise<void>;
+  getTaskOutcome(taskId: string): Promise<TaskOutcome | undefined>;
   subscribeToProjectChanges(listener: (event: ProjectChangeEvent) => void): () => void;
   queryContext(query: ContextQuery): Promise<ContextBundle>;
 }

@@ -5,6 +5,8 @@ import type { ProjectMemory } from "./project-memory.js";
 import type { AgentTask, ChangeRecord, ContextBundle, ContextFile, ContextQuery, ContextSymbol,
   Observation, Project, ProjectChangeEvent, ProjectEdge, ProjectFile, ProjectSymbol, RiskSignal } from "./types.js";
 import type { AgentPlan, Evidence, ModelExecution, PlanStep, ToolRun } from "../planning/types.js";
+import type { FilePatch, MutationProposal, MutationTransaction, RepairAttempt, TaskOutcome } from "../mutation/types.js";
+import type { VerificationRun } from "../verification/types.js";
 
 interface StoredObservation extends Observation { id: string; projectId: string }
 interface StoredChange extends FileChangeRecord { projectId: string }
@@ -47,6 +49,12 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
   const toolRuns = db.collection<ToolRun & { projectId: string }>("tool_runs");
   const evidenceRecords = db.collection<Evidence & { projectId: string; planId: string; stepId?: string }>("evidence");
   const modelExecutions = db.collection<ModelExecution & { projectId: string }>("model_executions");
+  const mutationProposals = db.collection<MutationProposal & { projectId: string }>("mutation_proposals");
+  const filePatches = db.collection<FilePatch & { id: string; projectId: string; proposalId: string }>("file_patches");
+  const mutationTransactions = db.collection<MutationTransaction & { projectId: string }>("mutation_transactions");
+  const verificationRuns = db.collection<VerificationRun & { projectId: string }>("verification_runs");
+  const repairAttempts = db.collection<RepairAttempt & { projectId: string }>("repair_attempts");
+  const taskOutcomes = db.collection<TaskOutcome & { id: string; taskId: string; projectId: string }>("task_outcomes");
   let currentProjectId: string | undefined;
   const listeners = new Set<(event: ProjectChangeEvent) => void>();
 
@@ -176,6 +184,7 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
       emit("plan", [plan.id]);
     },
     async getPlan(planId) { return (await plans.find({ id: planId, projectId: projectId() }))[0]; },
+    async findPlanForTask(taskId) { return (await plans.find({ taskId, projectId: projectId() }))[0]; },
     async recordToolRun(run) { await upsert(toolRuns, { ...run, projectId: projectId() }); emit("tool_run", [run.id]); },
     async recordEvidence(evidence, planId, stepId) {
       const id = projectId(); await upsert(evidenceRecords, { ...evidence, projectId: id, planId, stepId });
@@ -183,6 +192,22 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
       emit("evidence", [evidence.id]);
     },
     async recordModelExecution(execution) { await upsert(modelExecutions, { ...execution, projectId: projectId() }); emit("model_execution", [execution.id]); },
+    async getModelExecutions(taskId) { return modelExecutions.find({ taskId, projectId: projectId() }); },
+    async persistMutationProposal(proposal) {
+      const id = projectId(); await upsert(mutationProposals, { ...proposal, projectId: id });
+      await upsert(edges, { id: `edge:plan-mutation:${proposal.planId}:${proposal.id}`, projectId: id, from: `plan:${proposal.planId}`, to: `mutation:${proposal.id}`, relation: "HAS_MUTATION", confidence: 1, source: "agent" });
+      for (const [index, patch] of proposal.files.entries()) { const patchId = `${proposal.id}:file:${index}`; await upsert(filePatches, { ...patch, id: patchId, projectId: id, proposalId: proposal.id }); await upsert(edges, { id: `edge:mutation-file:${proposal.id}:${index}`, projectId: id, from: `mutation:${proposal.id}`, to: `file-patch:${patchId}`, relation: "CONTAINS", confidence: 1, source: "agent" }); }
+      emit("mutation_proposal", [proposal.id]);
+    },
+    async getMutationProposal(proposalId) { return (await mutationProposals.find({ id: proposalId, projectId: projectId() }))[0]; },
+    async findMutationForPlan(planId) { return (await mutationProposals.find({ planId, projectId: projectId() }))[0]; },
+    async persistMutationTransaction(transaction) { const id = projectId(); await upsert(mutationTransactions, { ...transaction, projectId: id }); await upsert(edges, { id: `edge:mutation-transaction:${transaction.proposalId}:${transaction.id}`, projectId: id, from: `mutation:${transaction.proposalId}`, to: `transaction:${transaction.id}`, relation: "HAS_TRANSACTION", confidence: 1, source: "agent" }); emit("mutation_transaction", [transaction.id]); },
+    async getMutationTransactions(taskId) { return mutationTransactions.find({ taskId, projectId: projectId() }); },
+    async persistVerificationRun(run) { const id = projectId(); await upsert(verificationRuns, { ...run, projectId: id }); await upsert(edges, { id: `edge:mutation-verification:${run.proposalId}:${run.id}`, projectId: id, from: `mutation:${run.proposalId}`, to: `verification:${run.id}`, relation: "VERIFIED_BY", confidence: 1, source: "agent" }); emit("verification_run", [run.id]); },
+    async getVerificationRuns(taskId) { return verificationRuns.find({ taskId, projectId: projectId() }); },
+    async persistRepairAttempt(attempt) { const id = projectId(); await upsert(repairAttempts, { ...attempt, projectId: id }); await upsert(edges, { id: `edge:repair:${attempt.id}:${attempt.proposalId}`, projectId: id, from: `repair:${attempt.id}`, to: `mutation:${attempt.proposalId}`, relation: "REPAIR_OF", confidence: 1, source: "agent" }); emit("repair_attempt", [attempt.id]); },
+    async persistTaskOutcome(taskId, outcome) { const id = projectId(); await upsert(taskOutcomes, { ...outcome, id: `outcome:${taskId}`, taskId, projectId: id }); await upsert(edges, { id: `edge:task-outcome:${taskId}`, projectId: id, from: `task:${taskId}`, to: `outcome:${taskId}`, relation: "HAS_OUTCOME", confidence: 1, source: "agent" }); emit("task_outcome", [taskId]); },
+    async getTaskOutcome(taskId) { return (await taskOutcomes.find({ taskId, projectId: projectId() }))[0]; },
     subscribeToProjectChanges(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async queryContext(query: ContextQuery): Promise<ContextBundle> {
       const [projectFiles, projectSymbols, projectEdges, projectCommits, projectChanges, projectObservations, pairs] = await all();
