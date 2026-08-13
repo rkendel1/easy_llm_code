@@ -1,0 +1,31 @@
+{
+  "name": "@easy-llm/code-agent",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "llm-code": "dist/cli/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "code": "tsx src/cli/main.ts"
+  },
+  "dependencies": {
+    "@easy-llm/llm": "0.1.7",
+    "@feltdb/core": "0.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.2",
+    "vitest": "^2.1.8"
+  }
+}
