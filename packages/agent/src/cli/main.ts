@@ -178,7 +178,7 @@ const main = async (): Promise<void> => {
     try {
       const result = resumeId ? await runner.resume(resumeId) : await runner.run({ request: request ?? "", mode });
       if (!jsonMode) {
-        if (mode === "ask" && result.answer !== undefined) console.log(typeof result.answer === "string" ? result.answer : JSON.stringify(result.answer, null, 2));
+        if (mode === "ask" && result.answer !== undefined) console.log(typeof result.answer === "string" ? result.answer : result.answer && typeof result.answer === "object" && "text" in result.answer && typeof result.answer.text === "string" ? result.answer.text : JSON.stringify(result.answer, null, 2));
         if (mode === "plan" && result.plan) for (const step of result.plan.steps) console.log(`${step.order}. ${step.description}${step.target ? `\n   ${step.target}` : ""}`);
         const models = await memory.getModelExecutions(result.taskId); if (result.outcome) console.log(renderPerformanceSummary({ model: models.at(-1), outcome: result.outcome, context: result.context?.metrics }));
       }

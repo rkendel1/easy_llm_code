@@ -65,6 +65,7 @@ describe("PR13 coding workspace and onboarding certification", () => {
   it("runs a first conversational task and exposes it after reopening the workspace", async () => {
     const setup = await memoryFor(await repository("journey")); await onboardProject(setup); const runner = createTaskRunner({ root: setup.project.root, memory: setup.memory, askLlm: async () => ({ text: "The value is explained." }) }); const result = await runner.run({ request: "Why is this value exported?", mode: "ask" });
     expect(result).toMatchObject({ state: "completed", answer: { text: "The value is explained." } });
+    expect(await setup.memory.getModelExecutions(result.taskId)).toMatchObject([{ taskId: result.taskId, phase: "context" }]);
     const reopened = createFeltDBProjectMemory({ root: setup.project.root, namespace: `pr13:${setup.project.id}`, storagePath: join(configurationRoot, `${setup.project.id}.json`) }); await reopened.initialize(setup.project); const status = await getWorkspaceStatus(setup.project, await readProjectConfig(setup.project.id), reopened);
     expect(status).toMatchObject({ state: "ready", project: { indexed: true }, recentTasks: [{ id: result.taskId, request: "Why is this value exported?", status: "completed" }] });
   });

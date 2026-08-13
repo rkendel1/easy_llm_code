@@ -10,7 +10,7 @@ case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; x86_64|amd64) arch=x64 ;; *) 
 [ "$platform-$arch" != "win32-arm64" ] || { echo "Windows arm64 is not a release target." >&2; exit 1; }
 extension=""; [ "$platform" != win32 ] || extension=.exe
 artifact="$output/easy-llm-code-$platform-$arch$extension"
-npx --yes esbuild@0.25.9 "$root/packages/agent/src/cli/main.ts" --bundle --platform=node --format=cjs --target=node20 --define:import.meta.url=__filename --outfile="$temporary/bundle.cjs"
+node "$root/distribution/bundle-native.mjs" "$root" "$temporary/bundle.cjs"
 sea_main="$temporary/bundle.cjs"; sea_blob="$temporary/sea-prep.blob"
 if [ "$platform" = win32 ]; then sea_main="$(cygpath -m "$sea_main")"; sea_blob="$(cygpath -m "$sea_blob")"; fi
 printf '{"main":"%s","output":"%s","disableExperimentalSEAWarning":true,"useSnapshot":false,"useCodeCache":false}\n' "$sea_main" "$sea_blob" > "$temporary/sea-config.json"

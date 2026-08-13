@@ -1,7 +1,7 @@
 {
   "name": "easy-llm-code",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "workspaces": [
     "packages/*",
     "apps/*"
@@ -11,5 +11,6 @@
     "test": "npm run test -w @easy-llm/code-agent && npm run test -w @easy-llm/code-website && npm run test -w apps/vscode-extension",
     "code": "npm run code -w @easy-llm/code-agent --",
     "build:native": "sh distribution/build-native.sh"
-  }
+  },
+  "devDependencies": { "esbuild": "^0.25.12" }
 }
