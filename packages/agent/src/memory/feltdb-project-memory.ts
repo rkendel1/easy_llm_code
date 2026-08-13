@@ -1,238 +1,182 @@
 import { createFeltDB } from "@feltdb/core";
+import { coChangePairs, revertedSha } from "../history/changes.js";
+import type { CommitRecord, FileChangeRecord, HistoryCursor } from "../history/history-types.js";
 import type { ProjectMemory } from "./project-memory.js";
-import type {
-  ContextBundle,
-  ContextFile,
-  ContextQuery,
-  ContextSymbol,
-  Observation,
-  Project,
-  ProjectEdge,
-  ProjectFile,
-  ProjectSymbol
-} from "./types.js";
+import type { AgentTask, ChangeRecord, ContextBundle, ContextFile, ContextQuery, ContextSymbol,
+  Observation, Project, ProjectChangeEvent, ProjectEdge, ProjectFile, ProjectSymbol, RiskSignal } from "./types.js";
 
-interface StoredObservation extends Observation {
-  id: string;
-  projectId: string;
-}
+interface StoredObservation extends Observation { id: string; projectId: string }
+interface StoredChange extends FileChangeRecord { projectId: string }
+interface StoredCommit extends CommitRecord { projectId: string; revertedBy?: string }
+interface CoChange { id: string; projectId: string; from: string; to: string; count: number }
+export interface MemoryOptions { root: string; namespace?: string; server?: { url: string; token: string } }
 
-interface MemoryOptions {
-  root: string;
-  namespace?: string;
-}
-
-const tokenize = (text: string): string[] =>
-  text
-    .toLowerCase()
-    .split(/[^a-z0-9_./-]+/)
-    .filter(Boolean);
-
-const stringScore = (text: string, queryText: string, tokens: string[]): number => {
-  const lower = text.toLowerCase();
-  let score = lower.includes(queryText) ? 4 : 0;
-  for (const token of tokens) {
-    if (lower.includes(token)) {
-      score += 1;
-      continue;
-    }
-    if (token.length >= 4) {
-      const fragment = token.slice(0, 4);
-      if (lower.includes(fragment)) {
-        score += 1;
-      }
-    }
-  }
+const tokenize = (text: string): string[] => text.toLowerCase().split(/[^a-z0-9_./-]+/).filter(Boolean);
+const lexical = (text: string, query: string, tokens: string[]): number => {
+  const lower = text.toLowerCase(); let score = lower.includes(query) ? 4 : 0;
+  for (const token of tokens) if (lower.includes(token) || (token.length >= 4 && lower.includes(token.slice(0, 4)))) score++;
   return score;
 };
-
-const firstReason = (reasons: string[]): string => reasons[0] ?? "graph expansion";
+const recency = (timestamp: string): number => Math.max(0, 1 - (Date.now() - Date.parse(timestamp)) / (365 * 86400000));
+const pathOf = (idOrPath: string): string => idOrPath.startsWith("file:") ? idOrPath.slice(5) : idOrPath;
+export const CONTEXT_RANKING_WEIGHTS = {
+  lexicalRelevance: 0.30,
+  graphDistance: 0.25,
+  recency: 0.15,
+  coChange: 0.15,
+  taskHistory: 0.15
+} as const;
 
 export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory => {
-  const db = createFeltDB({
-    namespace: options.namespace ?? `code-agent:${options.root}`,
-    memory: true
-  });
-
+  const db = options.server
+    ? createFeltDB({ namespace: options.namespace ?? `code-agent:${options.root}`, server: options.server })
+    : createFeltDB({ namespace: options.namespace ?? `code-agent:${options.root}`, memory: true });
   const projects = db.collection<Project & { id: string }>("projects");
   const files = db.collection<ProjectFile & { projectId: string }>("files");
   const symbols = db.collection<ProjectSymbol & { projectId: string }>("symbols");
   const edges = db.collection<ProjectEdge & { projectId: string }>("edges");
   const observations = db.collection<StoredObservation>("observations");
-
+  const tasks = db.collection<AgentTask & { projectId: string }>("tasks");
+  const commits = db.collection<StoredCommit>("commits");
+  const changes = db.collection<StoredChange>("changes");
+  const cursors = db.collection<HistoryCursor & { id: string }>("history-cursors");
+  const cochanges = db.collection<CoChange>("cochanges");
   let currentProjectId: string | undefined;
+  const listeners = new Set<(event: ProjectChangeEvent) => void>();
 
-  const upsertById = async <T extends { id: string }>(collection: {
-    find(query: Record<string, unknown>): Promise<T[]>;
-    insert(item: T): Promise<string>;
-    update(id: string, updates: Partial<T>): Promise<void>;
-  }, item: T): Promise<void> => {
-    const existing = await collection.find({ id: item.id });
-    if (existing.length > 0) {
-      await collection.update(item.id, item);
-      return;
-    }
-    await collection.insert(item);
+  const upsert = async <T extends { id: string }>(collection: any, item: T): Promise<void> => {
+    const found = await collection.find({ id: item.id });
+    if (found.length) await collection.update(item.id, item); else await collection.insert(item, item.id);
   };
-
-  const ensureProjectId = (): string => {
-    if (!currentProjectId) {
-      throw new Error("Project memory not initialized");
-    }
-    return currentProjectId;
+  const projectId = (): string => { if (!currentProjectId) throw new Error("Project memory not initialized"); return currentProjectId; };
+  const emit = (type: string, ids: string[]): void => {
+    const event = { type, ids, timestamp: new Date().toISOString() };
+    for (const listener of listeners) listener(event);
+  };
+  const all = async () => {
+    const id = projectId();
+    return Promise.all([files.find({ projectId: id }), symbols.find({ projectId: id }), edges.find({ projectId: id }),
+      commits.find({ projectId: id }), changes.find({ projectId: id }), observations.find({ projectId: id }), cochanges.find({ projectId: id })]);
+  };
+  const assemble = async (selected: StoredCommit[]): Promise<ChangeRecord[]> => {
+    const projectChanges = await changes.find({ projectId: projectId() });
+    return selected.map((commit) => ({ commit, files: projectChanges.filter((change) => change.commitId === commit.id), revertedBy: commit.revertedBy }));
   };
 
   return {
-    async initialize(project) {
-      currentProjectId = project.id;
-      await upsertById(projects as never, project);
-    },
-
-    async getProject() {
-      const projectId = ensureProjectId();
-      const match = await projects.find({ id: projectId });
-      if (match.length === 0) {
-        throw new Error(`Project ${projectId} not found`);
-      }
-      return match[0];
-    },
-
-    async upsertFile(file) {
-      const projectId = ensureProjectId();
-      await upsertById(files as never, { ...file, projectId });
-    },
-
-    async upsertSymbol(symbol) {
-      const projectId = ensureProjectId();
-      await upsertById(symbols as never, { ...symbol, projectId });
-    },
-
-    async addRelationship(edge) {
-      const projectId = ensureProjectId();
-      await upsertById(edges as never, { ...edge, projectId });
-    },
-
+    async initialize(project) { currentProjectId = project.id; await upsert(projects, project); },
+    async getProject() { const found = await projects.find({ id: projectId() }); if (!found[0]) throw new Error("Project not found"); return found[0]; },
+    async upsertFile(file) { await upsert(files, { ...file, projectId: projectId() }); emit("file", [file.id]); },
+    async upsertSymbol(symbol) { await upsert(symbols, { ...symbol, projectId: projectId() }); emit("symbol", [symbol.id]); },
+    async addRelationship(edge) { await upsert(edges, { ...edge, projectId: projectId() }); emit("relationship", [edge.id]); },
     async recordObservation(observation) {
-      const projectId = ensureProjectId();
-      const id = `${observation.type}:${observation.taskId}:${observation.timestamp}`;
-      await upsertById(observations as never, {
-        ...observation,
-        id,
-        projectId
-      });
+      const id = observation.id ?? `${observation.type}:${observation.taskId}:${observation.timestamp}`;
+      await upsert(observations, { ...observation, id, projectId: projectId() });
+      await this.addRelationship({ id: `edge:task-produced:${observation.taskId}:${id}`, from: `task:${observation.taskId}`,
+        to: `observation:${id}`, relation: "PRODUCED", confidence: 1, source: "agent" });
+      for (const file of observation.relatedFiles ?? []) await this.addRelationship({ id: `edge:observation-file:${id}:${file}`,
+        from: `observation:${id}`, to: file, relation: "OBSERVED", confidence: 1, source: "agent" });
+      emit("observation", [id]);
     },
-
-    async queryContext(query: ContextQuery): Promise<ContextBundle> {
-      const projectId = ensureProjectId();
-      const queryText = query.text.toLowerCase();
-      const tokens = tokenize(query.text);
-      const [projectFiles, projectSymbols, projectEdges, projectObservations] = await Promise.all([
-        files.find({ projectId }),
-        symbols.find({ projectId }),
-        edges.find({ projectId }),
-        observations.find({ projectId })
-      ]);
-
-      const scoreByFile = new Map<string, { score: number; reasons: string[] }>();
-      const scoreBySymbol = new Map<string, { score: number; reasons: string[] }>();
-
-      for (const file of projectFiles) {
-        const pathScore = stringScore(file.path, queryText, tokens);
-        if (pathScore > 0) {
-          scoreByFile.set(file.id, {
-            score: pathScore,
-            reasons: ["path match"]
-          });
+    async upsertTask(task) { await upsert(tasks, { ...task, projectId: projectId() }); emit("task", [task.id]); },
+    async getTask(taskId) {
+      const found = await tasks.find({ id: taskId, projectId: projectId() }); if (!found[0]) return undefined;
+      return { task: found[0], observations: await observations.find({ taskId, projectId: projectId() }) };
+    },
+    async ingestCommit(commit, commitChanges) {
+      const id = projectId();
+      await upsert(commits, { ...commit, projectId: id });
+      for (const change of commitChanges) {
+        await upsert(changes, { ...change, projectId: id });
+        await upsert(edges, { id: `edge:changed:${commit.id}:${change.fileId}`, projectId: id, from: commit.id, to: change.fileId,
+          relation: "CHANGED", confidence: 1, source: "git", commitId: commit.id, validFrom: commit.sha });
+      }
+      for (const parent of commit.parentShas) await upsert(edges, { id: `edge:parent:${parent}:${commit.sha}`, projectId: id,
+        from: `commit:${parent}`, to: commit.id, relation: "PARENT_OF", confidence: 1, source: "git", commitId: commit.id });
+      for (const [from, to] of coChangePairs(commitChanges)) {
+        const pairId = `cochange:${from}:${to}`; const found = await cochanges.find({ id: pairId }); const count = (found[0]?.count ?? 0) + 1;
+        await upsert(cochanges, { id: pairId, projectId: id, from, to, count });
+        await upsert(edges, { id: `edge:${pairId}`, projectId: id, from, to, relation: "CO_CHANGED",
+          confidence: Math.min(0.99, count / (count + 2)), source: "git", commitId: commit.id });
+      }
+      const reverted = revertedSha(commit.message);
+      if (reverted) {
+        const originals = await commits.find({ sha: reverted, projectId: id });
+        if (originals[0]) {
+          await commits.update(originals[0].id, { revertedBy: commit.id });
+          await upsert(edges, { id: `edge:revert:${originals[0].id}:${commit.id}`, projectId: id, from: originals[0].id,
+            to: commit.id, relation: "REVERTED_BY", confidence: 1, source: "git", commitId: commit.id });
         }
       }
-
-      for (const symbol of projectSymbols) {
-        const symbolScore = stringScore(symbol.name, queryText, tokens);
-        if (symbolScore > 0) {
-          scoreBySymbol.set(symbol.id, {
-            score: symbolScore,
-            reasons: ["symbol match"]
-          });
-          const fileScore = scoreByFile.get(symbol.fileId) ?? { score: 0, reasons: [] };
-          fileScore.score += symbolScore;
-          fileScore.reasons.push("symbol in file match");
-          scoreByFile.set(symbol.fileId, fileScore);
-        }
-      }
-
-      for (const observation of projectObservations) {
-        const text = JSON.stringify(observation.content).toLowerCase();
-        const obsScore = stringScore(text, queryText, tokens);
-        if (obsScore <= 0) {
-          continue;
-        }
-        for (const file of projectFiles) {
-          if (text.includes(file.path.toLowerCase()) || tokens.some((token) => file.path.toLowerCase().includes(token))) {
-            const prior = scoreByFile.get(file.id) ?? { score: 0, reasons: [] };
-            prior.score += obsScore + 1;
-            prior.reasons.push("observation memory match");
-            scoreByFile.set(file.id, prior);
-          }
-        }
-      }
-
-      const selectedIds = new Set<string>();
-      const limit = query.limit ?? 12;
-
-      const topFileIds = [...scoreByFile.entries()]
-        .sort((a, b) => b[1].score - a[1].score)
-        .slice(0, limit)
-        .map(([id]) => id);
-
-      for (const id of topFileIds) {
-        selectedIds.add(id);
-      }
-
+      emit("commit", [commit.id, ...commitChanges.map((change) => change.fileId)]);
+    },
+    async getHistoryCursor() { return (await cursors.find({ id: projectId() }))[0]; },
+    async setHistoryCursor(cursor) { await upsert(cursors, { ...cursor, id: cursor.repositoryId }); },
+    async getFileHistory(fileId, opts = {}) {
+      const [projectFiles, projectCommits, projectChanges] = await Promise.all([files.find({ projectId: projectId() }), commits.find({ projectId: projectId() }), changes.find({ projectId: projectId() })]);
+      const path = pathOf(fileId); const file = projectFiles.find((item) => item.id === fileId || item.path === path) ?? { id: `file:${path}`, path, size: 0 };
+      const ids = new Set(projectChanges.filter((change) => change.fileId === file.id || change.oldPath === path || change.newPath === path).map((change) => change.commitId));
+      let matching = projectCommits.filter((commit) => ids.has(commit.id) && (!opts.before || commit.timestamp < opts.before)).sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+      const totalCommits = matching.length; matching = matching.slice(0, opts.limit ?? 20);
+      return { file, changes: await assemble(matching), totalCommits };
+    },
+    async getRelatedChanges(query) {
+      const projectCommits = await commits.find({ projectId: projectId() }); const tokens = tokenize(query.text ?? "");
+      const projectChanges = await changes.find({ projectId: projectId() });
+      const selected = projectCommits.map((commit) => {
+        const linked = projectChanges.filter((change) => change.commitId === commit.id);
+        const fileMatch = !query.fileIds?.length || linked.some((change) => query.fileIds!.some((id) => change.fileId === id || pathOf(change.fileId) === pathOf(id)));
+        const commitMatch = !query.commitIds?.length || query.commitIds.includes(commit.id) || query.commitIds.includes(commit.sha);
+        return { commit, score: lexical(`${commit.message} ${linked.map((c) => pathOf(c.fileId)).join(" ")}`, (query.text ?? "").toLowerCase(), tokens) + recency(commit.timestamp), fileMatch, commitMatch };
+      }).filter((item) => item.fileMatch && item.commitMatch && (!query.text || item.score > 0)).sort((a, b) => b.score - a.score).slice(0, query.limit ?? 12);
+      const records = await assemble(selected.map((item) => item.commit));
+      return records.map((record, index) => ({ ...record, score: selected[index].score, reason: "message, changed-file, and recency match" }));
+    },
+    async getRecentChanges(opts = {}) {
+      const selected = (await commits.find({ projectId: projectId() })).filter((c) => !opts.since || c.timestamp >= opts.since).sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, opts.limit ?? 10);
+      return assemble(selected);
+    },
+    async getChangeImpact(inputFiles) {
+      const [projectFiles, , projectEdges, , , , pairs] = await all();
+      const selected = new Set(inputFiles.map((value) => projectFiles.find((f) => f.path === pathOf(value))?.id ?? value));
+      const dependents = new Set<string>(), tests = new Set<string>(), co = new Map<string, number>();
       for (const edge of projectEdges) {
-        if (selectedIds.has(edge.from) || selectedIds.has(edge.to)) {
-          selectedIds.add(edge.from);
-          selectedIds.add(edge.to);
-          if (edge.relation === "TESTS") {
-            selectedIds.add(edge.from);
-            selectedIds.add(edge.to);
-          }
-        }
+        if (selected.has(edge.to) && ["IMPORTS", "DEPENDS_ON"].includes(edge.relation)) dependents.add(pathOf(edge.from));
+        if (selected.has(edge.to) && edge.relation === "TESTS") tests.add(pathOf(edge.from));
       }
-
-      const contextFiles: ContextFile[] = projectFiles
-        .filter((file) => selectedIds.has(file.id))
-        .map((file) => {
-          const scored = scoreByFile.get(file.id);
-          return {
-            ...file,
-            score: scored?.score ?? 1,
-            reason: firstReason(scored?.reasons ?? [])
-          };
-        })
-        .sort((a, b) => b.score - a.score)
-        .slice(0, limit);
-
-      const contextSymbols: ContextSymbol[] = projectSymbols
-        .filter((symbol) => selectedIds.has(symbol.id) || selectedIds.has(symbol.fileId))
-        .map((symbol) => {
-          const scored = scoreBySymbol.get(symbol.id);
-          return {
-            ...symbol,
-            score: scored?.score ?? 1,
-            reason: firstReason(scored?.reasons ?? ["symbol attached to relevant file"])
-          };
-        })
-        .slice(0, limit * 3);
-
-      const relationships = projectEdges.filter(
-        (edge) => selectedIds.has(edge.from) || selectedIds.has(edge.to)
-      );
-
-      return {
-        files: contextFiles,
-        symbols: contextSymbols,
-        relationships
-      };
+      for (const pair of pairs) if (selected.has(pair.from)) co.set(pair.to, pair.count); else if (selected.has(pair.to)) co.set(pair.from, pair.count);
+      const riskSignals: RiskSignal[] = [...co.entries()].filter(([, count]) => count >= 2).map(([file, count]) => ({ level: count >= 5 ? "high" : "medium", reason: `changed together in ${count} historical commits`, files: [pathOf(file)] }));
+      return { directlyAffected: [...selected].map(pathOf), dependents: [...dependents], tests: [...tests], recentlyChangedTogether: [...co.entries()].sort((a,b) => b[1]-a[1]).map(([id]) => pathOf(id)), riskSignals };
+    },
+    async getSummary() {
+      const [projectFiles, projectSymbols, projectEdges, projectCommits, , projectObservations, pairs] = await all();
+      return { files: projectFiles.length, symbols: projectSymbols.length, relationships: projectEdges.length, commits: projectCommits.length,
+        tasks: (await tasks.find({ projectId: projectId() })).length, observations: projectObservations.length,
+        frequentCoChanges: pairs.filter((pair) => pair.count >= 2).length, revertedChanges: projectCommits.filter((c) => c.revertedBy).length,
+        recentChanges: await this.getRecentChanges({ limit: 5 }) };
+    },
+    async getCapabilities() {
+      const runtime = db.runtime();
+      return { persistent: runtime.persistent, reactive: runtime.reactive, temporal: true, graph: true };
+    },
+    subscribeToProjectChanges(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    async queryContext(query: ContextQuery): Promise<ContextBundle> {
+      const [projectFiles, projectSymbols, projectEdges, projectCommits, projectChanges, projectObservations, pairs] = await all();
+      const tokens = tokenize(query.text), normalized = query.text.toLowerCase(), limit = query.limit ?? 12;
+      const scoreFiles = new Map<string, { score: number; reasons: string[] }>();
+      for (const file of projectFiles) { const score = lexical(file.path, normalized, tokens); if (score) scoreFiles.set(file.id, { score: score * CONTEXT_RANKING_WEIGHTS.lexicalRelevance, reasons: ["direct task match"] }); }
+      for (const symbol of projectSymbols) { const score = lexical(symbol.name, normalized, tokens); if (score) { const prior = scoreFiles.get(symbol.fileId) ?? { score: 0, reasons: [] }; prior.score += score * CONTEXT_RANKING_WEIGHTS.lexicalRelevance; prior.reasons.push(`symbol ${symbol.name}`); scoreFiles.set(symbol.fileId, prior); } }
+      for (const observation of projectObservations) { const score = lexical(JSON.stringify(observation.content), normalized, tokens); if (!score) continue; for (const id of observation.relatedFiles ?? []) { const prior = scoreFiles.get(id) ?? { score: 0, reasons: [] }; prior.score += score * CONTEXT_RANKING_WEIGHTS.taskHistory; prior.reasons.push("previous agent observation"); scoreFiles.set(id, prior); } }
+      const initial = [...scoreFiles.keys()];
+      for (const edge of projectEdges) if (initial.includes(edge.from) || initial.includes(edge.to)) { const other = initial.includes(edge.from) ? edge.to : edge.from; if (projectFiles.some((f) => f.id === other)) { const prior = scoreFiles.get(other) ?? { score: 0, reasons: [] }; prior.score += edge.relation === "CO_CHANGED" ? edge.confidence * CONTEXT_RANKING_WEIGHTS.coChange : CONTEXT_RANKING_WEIGHTS.graphDistance; prior.reasons.push(edge.relation.toLowerCase().replace("_", " ")); scoreFiles.set(other, prior); } }
+      for (const pair of pairs) for (const id of initial) { const other = pair.from === id ? pair.to : pair.to === id ? pair.from : undefined; if (other) { const prior = scoreFiles.get(other) ?? { score: 0, reasons: [] }; prior.score += Math.min(1, pair.count / 5) * CONTEXT_RANKING_WEIGHTS.coChange; prior.reasons.push(`co-changed ${pair.count} times`); scoreFiles.set(other, prior); } }
+      const selected = [...scoreFiles.entries()].sort((a,b) => b[1].score-a[1].score).slice(0, limit); const ids = new Set(selected.map(([id]) => id));
+      const contextFiles: ContextFile[] = selected.map(([id, rank]) => ({ ...projectFiles.find((f) => f.id === id)!, score: Math.min(1, rank.score), reason: rank.reasons.join(" + ") })).filter((f) => f.id);
+      const contextSymbols: ContextSymbol[] = projectSymbols.filter((s) => ids.has(s.fileId)).slice(0, limit * 3).map((s) => ({ ...s, score: scoreFiles.get(s.fileId)?.score ?? .1, reason: "symbol attached to selected file" }));
+      const history = projectCommits.map((commit) => ({ commit, score: lexical(commit.message, normalized, tokens) * CONTEXT_RANKING_WEIGHTS.lexicalRelevance + recency(commit.timestamp) * CONTEXT_RANKING_WEIGHTS.recency })).filter((x) => x.score > CONTEXT_RANKING_WEIGHTS.lexicalRelevance).sort((a,b) => b.score-a.score).slice(0, Math.min(5, limit));
+      const contextChanges = await assemble(history.map((x) => x.commit)); contextChanges.forEach((record, i) => { record.score = history[i].score; record.reason = record.revertedBy ? "reverted historical approach" : "related historical change"; });
+      return { files: contextFiles, symbols: contextSymbols, relationships: projectEdges.filter((e) => ids.has(e.from) || ids.has(e.to)).slice(0, limit * 4), changes: contextChanges,
+        observations: projectObservations.filter((o) => lexical(JSON.stringify(o.content), normalized, tokens) > 0).slice(0, 5) };
     }
   };
 };

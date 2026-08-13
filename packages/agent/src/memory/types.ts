@@ -40,7 +40,14 @@ export type ProjectRelation =
   | "IMPLEMENTS"
   | "EXTENDS"
   | "DEPENDS_ON"
-  | "TESTS";
+  | "TESTS"
+  | "PARENT_OF"
+  | "CHANGED"
+  | "CO_CHANGED"
+  | "REVERTED_BY"
+  | "OBSERVED"
+  | "PRODUCED"
+  | "RELATED_TO";
 
 export interface ProjectEdge {
   id: string;
@@ -49,6 +56,9 @@ export interface ProjectEdge {
   relation: ProjectRelation;
   confidence: number;
   source: "filesystem" | "ast" | "git" | "agent";
+  validFrom?: string;
+  validTo?: string;
+  commitId?: string;
 }
 
 export interface ContextQuery {
@@ -70,13 +80,59 @@ export interface ContextBundle {
   files: ContextFile[];
   symbols: ContextSymbol[];
   relationships: ProjectEdge[];
+  changes?: ChangeRecord[];
+  observations?: Observation[];
 }
 
 export interface Observation {
-  type: "agent_analysis" | string;
+  id?: string;
+  type: "agent_analysis" | "test_result" | "tool_result" | "decision" | "warning";
   taskId: string;
   content: unknown;
   timestamp: string;
+  relatedFiles?: string[];
+  relatedSymbols?: string[];
+  relatedCommit?: string;
+}
+
+export interface AgentTask {
+  id: string;
+  request: string;
+  status: "created" | "analyzing" | "completed" | "failed";
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface HistoryQueryOptions { limit?: number; before?: string }
+export interface ChangeQuery { text?: string; fileIds?: string[]; commitIds?: string[]; limit?: number }
+export interface RecentChangeOptions { limit?: number; since?: string }
+export interface ChangeRecord {
+  commit: import("../history/history-types.js").CommitRecord;
+  files: import("../history/history-types.js").FileChangeRecord[];
+  score?: number;
+  reason?: string;
+  revertedBy?: string;
+}
+export interface FileHistory { file: ProjectFile; changes: ChangeRecord[]; totalCommits: number }
+export interface RiskSignal { level: "low" | "medium" | "high"; reason: string; files?: string[] }
+export interface ChangeImpact {
+  directlyAffected: string[];
+  dependents: string[];
+  tests: string[];
+  recentlyChangedTogether: string[];
+  riskSignals: RiskSignal[];
+}
+export interface MemorySummary {
+  files: number; symbols: number; relationships: number; commits: number;
+  tasks: number; observations: number; frequentCoChanges: number; revertedChanges: number;
+  recentChanges: ChangeRecord[];
+}
+export type ProjectChangeEvent = { type: string; ids: string[]; timestamp: string };
+export interface MemoryCapabilities {
+  persistent: boolean;
+  reactive: boolean;
+  temporal: boolean;
+  graph: boolean;
 }
 
 export interface AgentAnalysis {

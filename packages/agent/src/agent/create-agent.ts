@@ -1,6 +1,8 @@
 import { llm as defaultLlm } from "@easy-llm/llm";
 import type { ProjectMemory } from "../memory/project-memory.js";
 import type { AgentAnalysis } from "../memory/types.js";
+import { createContextEngine } from "../context/build-context.js";
+import type { ContextBudget, ExpansionPolicy, RankingWeights } from "../context/types.js";
 import { parseAgentAnalysis, runTask } from "./run-task.js";
 import type { AgentRunRequest, AgentRunResult, LlmExecutor } from "./types.js";
 
@@ -8,6 +10,7 @@ interface CreateCodeAgentOptions {
   root: string;
   memory: ProjectMemory;
   llm?: LlmExecutor;
+  context?: { budget?: Partial<ContextBudget>; ranking?: Partial<RankingWeights>; expansion?: Partial<ExpansionPolicy> };
 }
 
 const toPrompt = (task: string, context: unknown): string =>
@@ -58,13 +61,15 @@ const executeWithDefaultLlm: LlmExecutor = async ({ task, context }): Promise<Ag
 
 export const createCodeAgent = (options: CreateCodeAgentOptions) => {
   const llm = options.llm ?? executeWithDefaultLlm;
+  const contextEngine = createContextEngine({ memory: options.memory, ...options.context });
 
   return {
     run: async (request: AgentRunRequest): Promise<AgentRunResult> =>
       runTask(
         {
           memory: options.memory,
-          llm
+          llm,
+          contextEngine
         },
         request
       )
