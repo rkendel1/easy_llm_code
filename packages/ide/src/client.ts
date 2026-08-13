@@ -12,6 +12,7 @@ export class RuntimeClient {
   getWorkspaceStatus(): Promise<WorkspaceRuntimeStatus> { return this.request("/v1/workspace/status"); }
   getProjectIntelligence(): Promise<ProjectIntelligenceView> { return this.request("/v1/workspace/intelligence"); }
   getProjectSettings(): Promise<unknown> { return this.request("/v1/workspace/settings"); }
+  indexProject(): Promise<{ files: number; commits: number }> { return this.request("/v1/workspace/index", { method: "POST" }); }
   listTasks(): Promise<RuntimeTask[]> { return this.request("/v1/tasks"); }
   createTask(input: TaskCreateInput): Promise<RuntimeTask> { return this.request("/v1/tasks", { method: "POST", body: JSON.stringify(input) }); }
   getTask(taskId: string): Promise<RuntimeTask> { return this.request(`/v1/tasks/${encodeURIComponent(taskId)}`); }
