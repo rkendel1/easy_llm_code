@@ -13,7 +13,7 @@ import { createBuiltinToolRegistry } from "../src/tools/registry.js";
 const root = resolve(process.cwd(), "../../fixtures/sample-project");
 const setup = async () => {
   const project = await discoverProject(root);
-  const memory = createFeltDBProjectMemory({ root, namespace: `pr4:${Date.now()}:${Math.random()}` });
+  const memory = createFeltDBProjectMemory({ root, namespace: `pr4:${Date.now()}:${Math.random()}`, ephemeral: true });
   await memory.initialize(project); await indexProjectIntoMemory(root, project, memory);
   return memory;
 };

@@ -7,6 +7,15 @@ import type {
   HistoryQueryOptions,
   MemorySummary,
   MemoryCapabilities,
+  MemoryFactProvenance,
+  MemoryGraphStatistics,
+  MemoryResetResult,
+  MemoryResetScope,
+  MemoryExport,
+  MemoryStatus,
+  SyncState,
+  MemoryCompactionPolicy,
+  MemoryCompactionResult,
   RecentChangeOptions,
   AgentTask,
   ProjectChangeEvent,
@@ -58,6 +67,18 @@ export interface ProjectMemory {
   getChangeImpact(files: string[]): Promise<ChangeImpact>;
   getSummary(): Promise<MemorySummary>;
   getCapabilities(): Promise<MemoryCapabilities>;
+  persist(): Promise<void>;
+  reset(scope?: MemoryResetScope): Promise<MemoryResetResult>;
+  prepareRebuild(): Promise<MemoryResetResult>;
+  beginGeneration(reason: string): Promise<number>;
+  getGeneration(): Promise<number>;
+  getFactProvenance(factId: string): Promise<MemoryFactProvenance[]>;
+  getGraphStatistics(): Promise<MemoryGraphStatistics>;
+  getStatus(): Promise<MemoryStatus>;
+  sync(): Promise<SyncState>;
+  exportMemory(): Promise<MemoryExport>;
+  importMemory(snapshot: MemoryExport): Promise<void>;
+  compact(policy?: Partial<MemoryCompactionPolicy>): Promise<MemoryCompactionResult>;
   persistPlan(plan: AgentPlan): Promise<void>;
   getPlan(planId: string): Promise<AgentPlan | undefined>;
   findPlanForTask(taskId: string): Promise<AgentPlan | undefined>;

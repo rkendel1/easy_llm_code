@@ -1,6 +1,6 @@
-import { basename } from "node:path";
 import { access } from "node:fs/promises";
 import type { Project } from "../memory/types.js";
+import { resolveProjectIdentity } from "../memory/identity/project-identity.js";
 
 const exists = async (path: string): Promise<boolean> => {
   try {
@@ -11,9 +11,8 @@ const exists = async (path: string): Promise<boolean> => {
   }
 };
 
-const projectIdFromRoot = (root: string): string => `project:${root}`;
-
-export const discoverProject = async (root: string): Promise<Project> => {
+export const discoverProject = async (requestedRoot: string): Promise<Project> => {
+  const identity = await resolveProjectIdentity(requestedRoot), root = identity.root;
   const checks = await Promise.all([
     exists(`${root}/package.json`),
     exists(`${root}/pnpm-lock.yaml`),
@@ -44,9 +43,9 @@ export const discoverProject = async (root: string): Promise<Project> => {
   if (checks[8] || checks[9]) detectedLanguages.add("python");
 
   return {
-    id: projectIdFromRoot(root),
+    id: identity.id,
     root,
-    name: basename(root),
+    name: identity.name,
     detectedLanguages: [...detectedLanguages],
     packageManagers
   };

@@ -38,7 +38,7 @@ describe("PR2 temporal repository memory certification", () => {
     await git(root, "revert", "--no-edit", cacheSha);
 
     const project = await discoverProject(root);
-    const memory = createFeltDBProjectMemory({ root, namespace: `pr2:${Date.now()}` });
+    const memory = createFeltDBProjectMemory({ root, namespace: `pr2:${Date.now()}`, ephemeral: true });
     await memory.initialize(project); await indexProjectIntoMemory(root, project, memory);
     const first = await ingestRepositoryHistory(root, memory);
     expect(first.indexedCommits).toBe(4);

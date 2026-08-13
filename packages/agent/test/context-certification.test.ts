@@ -16,7 +16,7 @@ const sampleRoot = resolve(process.cwd(), "../../fixtures/sample-project");
 
 const indexedMemory = async (root: string) => {
   const project = await discoverProject(root);
-  const memory = createFeltDBProjectMemory({ root, namespace: `pr3:${Date.now()}:${Math.random()}` });
+  const memory = createFeltDBProjectMemory({ root, namespace: `pr3:${Date.now()}:${Math.random()}`, ephemeral: true });
   await memory.initialize(project);
   await indexProjectIntoMemory(root, project, memory);
   return memory;

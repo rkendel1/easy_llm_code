@@ -10,7 +10,7 @@ import type { IntelligentContextBundle } from "../src/context/types.js";
 import type { ImpactAssessment } from "../src/change-intelligence/types.js";
 
 const setup = async (id: string) => {
-  const memory = createFeltDBProjectMemory({ root: `/tmp/${id}`, namespace: `pr8:${id}` });
+  const memory = createFeltDBProjectMemory({ root: `/tmp/${id}`, namespace: `pr8:${id}`, ephemeral: true });
   await memory.initialize({ id, root: `/tmp/${id}`, name: id, detectedLanguages: ["TypeScript"], packageManagers: [] });
   for (const path of ["src/auth/session.ts", "src/auth/token.ts", "src/api/auth.ts", "test/auth/session.test.ts", "src/unrelated.ts"]) await memory.upsertFile({ id: `file:${path}`, path, language: "TypeScript", size: 10 });
   await memory.addRelationship({ id: "edge:import", from: "file:src/api/auth.ts", to: "file:src/auth/session.ts", relation: "IMPORTS", confidence: 1, source: "ast" });
@@ -76,7 +76,7 @@ describe("PR8 predictive change graph certification", () => {
 
   it("injects high-confidence impact evidence and persists planner accounting", async () => {
     const root = await mkdtemp(join(tmpdir(), "pr8-plan-")); await writeFile(join(root, "target.ts"), "export const target = 1;\n"); await writeFile(join(root, "affected.ts"), "export const affected = 1;\n");
-    const memory = createFeltDBProjectMemory({ root, namespace: `pr8-plan:${Date.now()}` }); await memory.initialize({ id: "planner", root, name: "planner", detectedLanguages: ["TypeScript"], packageManagers: [] });
+    const memory = createFeltDBProjectMemory({ root, namespace: `pr8-plan:${Date.now()}`, ephemeral: true }); await memory.initialize({ id: "planner", root, name: "planner", detectedLanguages: ["TypeScript"], packageManagers: [] });
     const reason = { lexical: 1, structural: 0, historical: 0, recency: 0, coChange: 0, memory: 0 };
     const context = { items: [{ id: "file:target.ts", type: "file", reference: "target.ts", score: 1, reason, content: "export const target = 1;" }], totalCandidates: 1, selectedItems: 1, estimatedTokens: 20, budget: { maxItems: 10, maxCharacters: 1000 }, strategy: "ranked", metrics: { candidateCount: 1, selectedCount: 1, characters: 24, estimatedTokens: 20, rawEstimatedTokens: 20, compressionRatio: 0 }, files: [{ id: "file:target.ts", path: "target.ts", size: 24, score: 1, reason: "direct" }], symbols: [], relationships: [] } satisfies IntelligentContextBundle;
     const evidence = { source: "historical" as const, target: "target.ts", candidate: "affected.ts", confidence: .9, observations: ["commit:1", "commit:2"], sampleSize: 12, generatedAt: "2026-08-13T00:00:00.000Z", description: "changed together in 12 commits" };

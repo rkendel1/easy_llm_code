@@ -19,7 +19,7 @@ const fixture = async () => {
   await writeFile(join(root, "verify.cjs"), "const fs=require('fs');process.exit(fs.readFileSync('src/value.ts','utf8').includes(\"'good'\")?0:1);\n");
   await writeFile(join(root, "package.json"), JSON.stringify({ name: "task-fixture", scripts: { test: "node verify.cjs" } }));
   await exec("git", ["-C", root, "init"]); await exec("git", ["-C", root, "config", "user.email", "test@example.com"]); await exec("git", ["-C", root, "config", "user.name", "Test"]); await exec("git", ["-C", root, "add", "."]); await exec("git", ["-C", root, "commit", "-m", "fixture"]);
-  const project = await discoverProject(root), memory = createFeltDBProjectMemory({ root, namespace: `pr6:${Date.now()}:${Math.random()}` }); await memory.initialize(project); await indexProjectIntoMemory(root, project, memory);
+  const project = await discoverProject(root), memory = createFeltDBProjectMemory({ root, namespace: `pr6:${Date.now()}:${Math.random()}`, ephemeral: true }); await memory.initialize(project); await indexProjectIntoMemory(root, project, memory);
   return { root, memory };
 };
 const plannerLlm = async () => ({ id: "plan", taskId: "assigned", objective: "Fix value", assumptions: [],

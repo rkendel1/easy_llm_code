@@ -2,11 +2,14 @@
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { resolve, sep } from "node:path";
-import { realpath } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { createCodeAgent } from "../agent/create-agent.js";
 import { discoverProject } from "../discovery/discover-project.js";
 import { indexProjectIntoMemory } from "../indexing/index-project.js";
 import { createFeltDBProjectMemory } from "../memory/feltdb-project-memory.js";
+import { createProjectMemory } from "../memory/create-project-memory.js";
+import { writeMemoryConfig, type MemoryStorageMode } from "../memory/core/memory-config.js";
+import { reconcileProjectMemory } from "../memory/lifecycle/reconcile.js";
 import { ingestRepositoryHistory } from "../history/ingest-history.js";
 import { createContextEngine } from "../context/build-context.js";
 import { gitDiffTool } from "../tools/builtin/git-diff.js";
@@ -40,25 +43,26 @@ if (budgetOption !== undefined && (!Number.isFinite(budgetOption) || budgetOptio
 const autonomyMode = args.includes("--safe") ? "safe" : args.includes("--aggressive") ? "aggressive" : "standard";
 if (configuredMode && !["ask", "plan", "edit", "auto"].includes(configuredMode)) throw new Error(`Invalid task mode: ${configuredMode}`);
 const invocationCwd = process.env.INIT_CWD ?? process.cwd();
-const root = resolve(invocationCwd, rootArg ? rootArg.slice("--root=".length) : process.cwd());
+let root = resolve(invocationCwd, rootArg ? rootArg.slice("--root=".length) : process.cwd());
 
-const optionsWithValues = new Set(["--model", "--budget", "--type", "--task", "--ide", "--port"]);
+const optionsWithValues = new Set(["--model", "--budget", "--type", "--task", "--ide", "--port", "--confirm"]);
 const positional = args.filter((arg, index) => !arg.startsWith("--") && !optionsWithValues.has(args[index - 1] ?? ""));
 const requestArg = positional[0];
 
 const printDoctor = async (memory: ReturnType<typeof createFeltDBProjectMemory>): Promise<void> => {
-  const capabilities = await memory.getCapabilities();
-  console.log("FeltDB");
+  const capabilities = await memory.getCapabilities(), project = await memory.getProject(), summary = await memory.getSummary(), graph = await memory.getGraphStatistics(), status = await memory.getStatus();
+  console.log("Project Memory\n────────────────────────────");
+  console.log(`Project:        ${project.name}`);
+  console.log(`Project ID:     ${project.id}`);
   console.log("Package:        @feltdb/core 0.2.0");
-  console.log("Runtime:        Node");
-  console.log(`Persistence:    ${capabilities.persistent ? "durable" : "ephemeral"}`);
-  console.log(`FELTDB_URL:     ${process.env.FELTDB_URL ? "configured" : "not configured"}`);
-  console.log(`FELTDB_TOKEN:   ${process.env.FELTDB_TOKEN ? "configured" : "not configured"}`);
-  console.log(`Memory survives process restart: ${capabilities.persistent ? "YES" : "NO"}`);
+  console.log(`Provider:       FeltDB ${status.provider}\nStorage:        ${capabilities.storage} (${status.storageBytes} bytes)\nPersistence:    ${capabilities.persistent ? "✓" : "✗ EPHEMERAL"}\nCross-process:  ${capabilities.crossProcess ? "✓" : "✗"}\nGraph:          ${capabilities.graph ? "✓" : "✗"}\nGit history:    ${capabilities.temporal ? "✓" : "✗"}\nTask memory:    ${capabilities.outcomes ? "✓" : "✗"}\nOutcome:        ${capabilities.outcomes ? "✓" : "✗"}\nExecution:      ${capabilities.execution ? "✓" : "✗"}\nSchema:         v${status.schemaVersion}\nLast sync:      ${status.sync.lastSyncAt ?? "never"}\nIntegrity:      ${status.integrity === "ok" ? "✓" : "✗"}\nSecrets:        ✓ credentials are not persisted`);
+  console.log(`Memory:\n  ${summary.tasks} tasks\n  ${summary.commits} commits\n  ${summary.files} files\n  ${graph.nodes.patterns ?? 0} learned patterns`);
+  if (!capabilities.persistent) console.log("⚠ Project memory will be lost when this process exits.");
 };
 
 const printMemory = async (memory: ReturnType<typeof createFeltDBProjectMemory>): Promise<void> => {
-  if (positional[1] === "graph") { const edges = await memory.listRelationships(), predicted = edges.filter((edge) => edge.relation.startsWith("LIKELY_")); console.log(`Change Intelligence Graph\nFacts: ${edges.length - predicted.length}\nPredictions: ${predicted.length}`); for (const edge of predicted.slice(0, 30)) console.log(`${edge.relation}  ${edge.from} → ${edge.to}  ${Math.round(edge.confidence * 100)}%  (${edge.evidenceCount ?? 0} evidence)`); return; }
+  if (positional[1] === "graph") { const stats = await memory.getGraphStatistics(); console.log(`Persistent Project Graph\nGeneration ${stats.generation}\nNodes\n${Object.entries(stats.nodes).map(([name, count]) => `  ${name.padEnd(18)} ${count}`).join("\n")}\nRelationships\n${Object.entries(stats.relationships).sort((a, b) => b[1] - a[1]).map(([name, count]) => `  ${name.padEnd(22)} ${count}`).join("\n")}`); return; }
+  if (positional[1] === "why" && positional[2]) { const facts = await memory.getFactProvenance(positional[2]); if (!facts.length) console.log(`No provenance found for ${positional[2]}.`); else for (const fact of facts) console.log(`${fact.collection}:${fact.factId}\nSource: ${fact.source}\nObserved: ${fact.observedAt}\nConfidence: ${fact.confidence.toFixed(2)}\nGeneration: ${fact.generation}\nEvidence: ${fact.evidence.join(", ") || "direct observation"}`); return; }
   if (positional[1] === "impact") { const [predictions, outcomes] = await Promise.all([memory.listImpactPredictions(), memory.listPredictionOutcomes()]); console.log(`Impact memory\nPredictions: ${predictions.length}\nOutcomes: ${outcomes.length}`); for (const item of predictions.slice(0, 20)) console.log(`${item.targets.join(", ")} → ${item.affectedFiles.length} files / ${item.affectedTests.length} tests  ${Math.round(item.confidence * 100)}%`); return; }
   if (positional[1] === "patterns") { const project = await memory.getProject(), generatedAt = new Date(Math.floor(Date.now() / 86_400_000) * 86_400_000).toISOString(); for (const pattern of mineChangePatterns(project.id, await memory.getRecentChanges({ limit: 10_000 }), generatedAt)) await memory.persistChangePattern(pattern); const [patterns, changes, executions] = await Promise.all([memory.listSuccessfulPatterns(), memory.listChangePatterns(), memory.listExecutionPatterns()]); console.log("Successful patterns"); patterns.forEach((item, index) => console.log(`${index + 1}. ${item.summary}\n   ${item.taskType}${item.subsystem ? ` / ${item.subsystem}` : ""} · Task ${item.taskId}\n   ${item.approach}`)); console.log("Change patterns"); changes.slice(0, 30).forEach((item) => console.log(`${item.target} → ${item.usuallyChanges.slice(0, 5).map((related) => `${related.path} (${Math.round(related.confidence * 100)}%)`).join(", ")}`)); console.log("Execution patterns"); executions.slice(0, 30).forEach((item) => console.log(`${item.taskType}${item.subsystem ? `/${item.subsystem}` : ""} ${item.risk} → ${item.strategy.join(" → ")} (${item.success ? "success" : "failure"})`)); if (!patterns.length && !changes.length && !executions.length) console.log("No patterns recorded yet."); return; }
   if (positional[1] === "failures") { const patterns = await memory.listFailurePatterns(); console.log("Failure patterns"); patterns.forEach((item, index) => console.log(`${index + 1}. ${item.description}\n   ${item.failureClass}${item.subsystem ? ` / ${item.subsystem}` : ""} · Task ${item.taskId}\n   Avoid: ${item.attemptedApproach}`)); if (!patterns.length) console.log("No failure patterns recorded yet."); return; }
@@ -85,10 +89,6 @@ const printMemory = async (memory: ReturnType<typeof createFeltDBProjectMemory>)
 };
 
 const main = async (): Promise<void> => {
-  const feltUrl = process.env.FELTDB_URL;
-  const feltToken = process.env.FELTDB_TOKEN;
-  const memory = createFeltDBProjectMemory({ root, server: feltUrl && feltToken ? { url: feltUrl, token: feltToken } : undefined });
-  if (requestArg === "doctor") { await printDoctor(memory); return; }
   if (requestArg === "ide") {
     const registry = createIDERegistry(), detected = await registry.detect(), available = registry.list(), action = positional[1] ?? (input.isTTY && output.isTTY ? "select" : "status");
     if (action === "detect") { const value = detected.map(({ adapter, detection }) => ({ id: adapter.id, name: adapter.name, ...detection })); if (jsonMode) console.log(JSON.stringify(value, null, 2)); else { console.log("Detected IDEs"); for (const item of value) console.log(`${item.detected ? "✓" : "○"} ${item.name}${item.path ? `\n  ${item.path}` : ""}`); } return; }
@@ -100,18 +100,37 @@ const main = async (): Promise<void> => {
     if (action !== "status") throw new Error(`Unknown IDE action: ${action}`);
     const value = { current: selected ? { id: selected.id, name: selected.name, source: selection.source, capabilities: selected.capabilities } : undefined, detected: detected.filter((item) => item.detection.detected).map((item) => ({ id: item.adapter.id, name: item.adapter.name, path: item.detection.path })), available: available.map((item) => ({ id: item.id, name: item.name })) }; if (jsonMode) console.log(JSON.stringify(value, null, 2)); else console.log(`🧩 IDE Integration\nCurrent: ${selected ? `${selected.name} (${selection.source})` : "none"}\nDetected\n${value.detected.map((item) => `  ✓ ${item.name}`).join("\n") || "  none"}\nAvailable integrations\n${value.available.map((item) => `  • ${item.name}`).join("\n")}`); return;
   }
-  if (!jsonMode) console.log("Indexing repository...");
   const project = await discoverProject(root);
-  await memory.initialize(project);
+  root = project.root;
+  if (requestArg === "memory" && positional[1] === "configure") {
+    const mode = positional[2] as MemoryStorageMode | undefined; if (!mode || !["local", "hosted", "hybrid"].includes(mode)) throw new Error("Usage: llm-code memory configure <local|hosted|hybrid>"); await writeMemoryConfig({ mode }); console.log(`Project memory mode configured: ${mode}.`); return;
+  }
+  const memory = await createProjectMemory(project);
 
-  const indexed = await indexProjectIntoMemory(root, project, memory);
-  const history = await ingestRepositoryHistory(root, memory);
-  if (!jsonMode) {
+  if (requestArg === "doctor") { await printDoctor(memory); return; }
+  if (requestArg === "memory" && positional[1] === "status") { const status = await memory.getStatus(); if (jsonMode) console.log(JSON.stringify(status, null, 2)); else console.log(`Project Memory\n──────────────────────────────\nProject\n  ${project.name} (${status.projectId})\nStorage\n  ${status.provider}\nPersistence\n  ${status.capabilities.persistent ? "✓" : "✗"} persistent\n  ${status.capabilities.crossProcess ? "✓" : "✗"} cross-process\nGraph\n${Object.entries(status.statistics.nodes).map(([name, count]) => `  ${name.padEnd(14)} ${count}`).join("\n")}\nLast indexed\n  ${status.lastIndexedAt ?? "never"}\nLast task\n  ${status.lastTaskId ?? "none"}\nSync\n  ${status.sync.status}`); return; }
+  if (requestArg === "memory" && positional[1] === "sync") { const state = await memory.sync(); console.log(jsonMode ? JSON.stringify(state) : `Memory sync: ${state.status} (${state.pendingChanges} pending, ${state.conflicts} conflicts)`); return; }
+  if (requestArg === "memory" && positional[1] === "export") { console.log(JSON.stringify(await memory.exportMemory(), null, 2)); return; }
+  if (requestArg === "memory" && positional[1] === "import") { const path = positional[2]; if (!path) throw new Error("Usage: llm-code memory import <project-memory.json>"); await memory.importMemory(JSON.parse(await readFile(resolve(invocationCwd, path), "utf8"))); console.log("Project memory imported."); return; }
+  if (requestArg === "memory" && positional[1] === "reset") {
+    const requestedScopes = (["graph", "history", "tasks", "outcomes", "execution", "routing"] as const).filter((scope) => args.includes(`--${scope}`)); if (requestedScopes.length > 1) throw new Error("Choose only one memory reset scope"); const scope = requestedScopes[0] ?? "all", confirmation = optionValue("confirm"); let accepted = args.includes("--yes") || confirmation === project.name;
+    if (!accepted && input.isTTY && output.isTTY) { const terminal = createInterface({ input, output }); try { const answer = await terminal.question(`⚠ Reset ${scope} memory for ${project.name}?\nRepository files will NOT be modified.\nType ${project.name} to continue: `); accepted = answer === project.name; } finally { terminal.close(); } }
+    if (!accepted) throw new Error(`MEMORY_RESET_CONFIRMATION_REQUIRED: pass --confirm=${project.name}`); const result = await memory.reset(scope); console.log(jsonMode ? JSON.stringify(result) : `Reset ${scope} memory. Removed ${Object.values(result.removed).reduce((sum, count) => sum + count, 0)} facts. Generation ${result.generation}.`); return;
+  }
+  const rebuilding = requestArg === "memory" && positional[1] === "rebuild"; if (rebuilding) await memory.prepareRebuild();
+  const reconciliation = rebuilding ? { changed: true, indexed: await indexProjectIntoMemory(project.root, project, memory) } : await reconcileProjectMemory(project.root, project, memory);
+  if (!jsonMode && reconciliation.changed) console.log(rebuilding ? "Rebuilding repository memory..." : "Reconciling repository memory...");
+
+  const indexed = reconciliation.indexed ?? { files: [], symbols: [], relationships: [] };
+  const history = await ingestRepositoryHistory(project.root, memory);
+  await memory.persist();
+  if (!jsonMode && (reconciliation.changed || history.indexedCommits)) {
     console.log(`✓ ${indexed.files.length} files`);
     console.log(`✓ ${indexed.symbols.length} symbols`);
     console.log(`✓ ${indexed.relationships.length} relationships`);
     console.log(`✓ ${history.indexedCommits} new commits`);
   }
+  if (rebuilding) { const stats = await memory.getGraphStatistics(); console.log(jsonMode ? JSON.stringify({ rebuilt: true, ...stats }) : `✓ Rebuilt factual memory as generation ${stats.generation}`); return; }
 
   if (requestArg === "serve") {
     const portValue = optionValue("port"), port = portValue === undefined ? 0 : Number(portValue); if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`Invalid port: ${portValue}`);

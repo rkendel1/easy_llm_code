@@ -15,7 +15,8 @@ describe("PR1 vertical loop certification", () => {
 
     const memory = createFeltDBProjectMemory({
       root,
-      namespace: `test:${Date.now()}`
+      namespace: `test:${Date.now()}`,
+      ephemeral: true
     });
 
     await memory.initialize(project);

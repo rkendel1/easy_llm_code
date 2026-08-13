@@ -110,6 +110,7 @@ export interface ProjectEdge {
   evidenceCount?: number;
   evidenceTypes?: import("../change-intelligence/types.js").ImpactEvidenceType[];
   lastObservedAt?: string;
+  generation?: number;
 }
 
 export interface ContextQuery {
@@ -181,10 +182,26 @@ export interface MemorySummary {
 export type ProjectChangeEvent = { type: string; ids: string[]; timestamp: string };
 export interface MemoryCapabilities {
   persistent: boolean;
+  crossProcess: boolean;
   reactive: boolean;
   temporal: boolean;
   graph: boolean;
+  outcomes: boolean;
+  execution: boolean;
+  sync: boolean;
+  storage: "feltdb-remote" | "feltdb-local-journal" | "feltdb-hybrid" | "memory";
 }
+
+export type MemoryResetScope = "all" | "graph" | "history" | "tasks" | "outcomes" | "execution" | "routing";
+export interface MemoryResetResult { scope: MemoryResetScope; removed: Record<string, number>; generation: number }
+export type MemoryFactClass = "FACTUAL" | "DERIVED";
+export interface MemoryFactProvenance { id: string; factId: string; collection: string; projectId: string; source: string; observedAt: string; confidence: number; generation: number; evidence: string[]; classification: MemoryFactClass; taskId?: string; commitId?: string; sandboxId?: string }
+export interface MemoryGraphStatistics { generation: number; nodes: Record<string, number>; relationships: Record<string, number> }
+export interface SyncState { projectId: string; localGeneration: number; remoteGeneration: number; lastSyncAt?: string; pendingChanges: number; conflicts: number; status: "local-only" | "offline" | "synced" | "pending" }
+export interface MemoryStatus { projectId: string; provider: "local" | "hosted" | "hybrid" | "ephemeral"; schemaVersion: number; generation: number; storageBytes: number; integrity: "ok" | "error"; lastIndexedAt?: string; lastTaskId?: string; sync: SyncState; capabilities: MemoryCapabilities; statistics: MemoryGraphStatistics }
+export interface MemoryExport { format: "easy-llm-code-project-memory"; schemaVersion: number; projectId: string; namespace: string; generation: number; exportedAt: string; operations: import("@feltdb/core").EmbeddedOperation[] }
+export interface MemoryCompactionPolicy { executionEvents: number; commandExecutions: number }
+export interface MemoryCompactionResult { removed: Record<string, number>; preservedFailures: number; generation: number }
 
 export interface AgentAnalysis {
   summary: string;

@@ -1,4 +1,8 @@
-import { createFeltDB } from "@feltdb/core";
+import { createFeltDB, type EmbeddedOperation } from "@feltdb/core";
+import { createHash, randomUUID } from "node:crypto";
+import { chmod, mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { coChangePairs, revertedSha } from "../history/changes.js";
 import type { CommitRecord, FileChangeRecord, HistoryCursor } from "../history/history-types.js";
 import type { ProjectMemory } from "./project-memory.js";
@@ -16,12 +20,13 @@ import type { FailurePattern } from "./failure-patterns.js";
 import type { ActualChange, ChangePattern, ImpactPrediction, PredictionOutcome } from "../change-intelligence/types.js";
 import type { AssumptionCheck, AutonomousExecution, ExecutionDecision, ExecutionPattern, ReviewResult } from "../autonomy/types.js";
 import type { EnvironmentFingerprint, ExecutionResult, FilesystemChange, NetworkObservation, ProcessObservation, ResourceUsage, Sandbox, SandboxEvent, SandboxSnapshot } from "../sandbox/core/sandbox-types.js";
+import type { MemoryExport, MemoryFactProvenance, MemoryResetScope, SyncState } from "./types.js";
 
 interface StoredObservation extends Observation { id: string; projectId: string }
 interface StoredChange extends FileChangeRecord { projectId: string }
 interface StoredCommit extends CommitRecord { projectId: string; revertedBy?: string }
 interface CoChange { id: string; projectId: string; from: string; to: string; count: number }
-export interface MemoryOptions { root: string; namespace?: string; server?: { url: string; token: string } }
+export interface MemoryOptions { root: string; namespace?: string; server?: { url: string; token: string }; hybrid?: { url: string; token: string }; ephemeral?: boolean; storagePath?: string }
 
 const tokenize = (text: string): string[] => text.toLowerCase().split(/[^a-z0-9_./-]+/).filter(Boolean);
 const lexical = (text: string, query: string, tokens: string[]): number => {
@@ -38,11 +43,29 @@ export const CONTEXT_RANKING_WEIGHTS = {
   coChange: 0.15,
   taskHistory: 0.15
 } as const;
+const MEMORY_SCHEMA_VERSION = 2;
+interface LocalMemoryJournal { version: number; namespace: string; generation: number; operations: EmbeddedOperation[]; lastSyncAt?: string; remoteGeneration?: number }
+const wait = (milliseconds: number): Promise<void> => new Promise((resolveWait) => setTimeout(resolveWait, milliseconds));
+const operationKey = (operation: EmbeddedOperation): string => operation.id;
+const redactSensitiveText = (value: string): string => value
+  .replace(/((?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*)[^\s,;]+/gi, "$1[REDACTED]")
+  .replace(/\b(?:sk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b/g, "[REDACTED]");
+const safeExportValue = (value: unknown, key = ""): unknown => {
+  if (/token|secret|password|authorization|api[_-]?key/i.test(key)) return "[REDACTED]";
+  if (typeof value === "string") return redactSensitiveText(value);
+  if (Array.isArray(value)) return value.map((item) => safeExportValue(item));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([entryKey, entryValue]) => [entryKey, safeExportValue(entryValue, entryKey)]));
+  return value;
+};
 
 export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory => {
+  if ([Boolean(options.server), Boolean(options.hybrid), Boolean(options.ephemeral)].filter(Boolean).length > 1) throw new Error("MEMORY_MODE_CONFLICT: server, hybrid, and ephemeral are mutually exclusive");
+  const namespace = options.namespace ?? `code-agent:${resolve(options.root)}`, localDurable = !options.server && !options.ephemeral;
   const db = options.server
-    ? createFeltDB({ namespace: options.namespace ?? `code-agent:${options.root}`, server: options.server })
-    : createFeltDB({ namespace: options.namespace ?? `code-agent:${options.root}`, memory: true });
+    ? createFeltDB({ namespace, server: options.server })
+    : createFeltDB({ namespace, memory: true });
+  const remoteDb = options.hybrid ? createFeltDB({ namespace, server: options.hybrid }) : undefined;
+  const storagePath = options.storagePath ?? join(homedir(), ".easy-llm", "projects", createHash("sha256").update(namespace).digest("hex").slice(0, 24), "memory", "project.json");
   const projects = db.collection<Project & { id: string }>("projects");
   const files = db.collection<ProjectFile & { projectId: string }>("files");
   const symbols = db.collection<ProjectSymbol & { projectId: string }>("symbols");
@@ -90,12 +113,23 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
   const sandboxResources = db.collection<ResourceUsage & { id: string; sandboxId: string; projectId: string }>("sandbox_resources");
   const sandboxSnapshots = db.collection<SandboxSnapshot & { projectId: string }>("sandbox_snapshots");
   const sandboxEvents = db.collection<SandboxEvent & { projectId: string }>("sandbox_events");
+  const factProvenance = db.collection<MemoryFactProvenance>("fact_provenance");
+  const memoryMetadata = db.collection<{ id: string; projectId: string; generation: number; reason: string; updatedAt: string }>("memory_metadata");
+  const namedCollections = new Map<any, string>([[projects, "projects"], [files, "files"], [symbols, "symbols"], [edges, "edges"], [observations, "observations"], [tasks, "tasks"], [commits, "commits"], [changes, "changes"], [cursors, "history-cursors"], [cochanges, "cochanges"], [plans, "plans"], [planSteps, "plan_steps"], [toolRuns, "tool_runs"], [evidenceRecords, "evidence"], [modelExecutions, "model_executions"], [mutationProposals, "mutation_proposals"], [filePatches, "file_patches"], [mutationTransactions, "mutation_transactions"], [verificationRuns, "verification_runs"], [repairAttempts, "repair_attempts"], [taskOutcomes, "task_outcomes"], [taskCheckpoints, "task_checkpoints"], [taskEvents, "task_events"], [outcomeSignals, "outcome_signals"], [contextOutcomes, "context_outcomes"], [successfulPatterns, "successful_patterns"], [failurePatterns, "failure_patterns"], [routingDecisions, "routing_decisions"], [routingFallbacks, "routing_fallbacks"], [impactPredictions, "impact_predictions"], [actualChanges, "actual_changes"], [predictionOutcomes, "prediction_outcomes"], [changePatterns, "change_patterns"], [autonomousExecutions, "autonomous_executions"], [executionDecisions, "execution_decisions"], [assumptionChecks, "assumption_checks"], [reviewResults, "review_results"], [executionPatterns, "execution_patterns"], [sandboxes, "sandboxes"], [sandboxFingerprints, "sandbox_fingerprints"], [sandboxCommands, "sandbox_commands"], [processObservations, "process_observations"], [filesystemChanges, "filesystem_changes"], [networkObservations, "network_observations"], [sandboxResources, "sandbox_resources"], [sandboxSnapshots, "sandbox_snapshots"], [sandboxEvents, "sandbox_events"], [factProvenance, "fact_provenance"], [memoryMetadata, "memory_metadata"]]);
   let currentProjectId: string | undefined;
+  let generation = 1, loaded = false, flushing = Promise.resolve(), lastSyncAt: string | undefined, remoteGeneration = 0;
   const listeners = new Set<(event: ProjectChangeEvent) => void>();
 
-  const upsert = async <T extends { id: string }>(collection: any, item: T): Promise<void> => {
+  const readJournal = async (): Promise<LocalMemoryJournal | undefined> => { try { const value = JSON.parse(await readFile(storagePath, "utf8")) as LocalMemoryJournal; if (value.namespace !== namespace) throw new Error("MEMORY_NAMESPACE_MISMATCH"); if (!Array.isArray(value.operations)) throw new Error("MEMORY_JOURNAL_INVALID"); return value; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; } };
+  const withLock = async <T>(action: () => Promise<T>): Promise<T> => { const lockPath = `${storagePath}.lock`; await mkdir(dirname(storagePath), { recursive: true, mode: 0o700 }); for (let attempt = 0; attempt < 250; attempt++) { try { const handle = await open(lockPath, "wx", 0o600); try { return await action(); } finally { await handle.close(); await unlink(lockPath).catch(() => undefined); } } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; try { if (Date.now() - (await stat(lockPath)).mtimeMs > 30_000) await unlink(lockPath); } catch {} await wait(20); } } throw new Error("MEMORY_LOCK_TIMEOUT"); };
+  const flush = async (): Promise<void> => { if (!localDurable || !loaded) return; const write = async () => withLock(async () => { const stored = await readJournal(); if (stored?.operations.length) await db.applyOperations(stored.operations); const exported = await db.exportOperations(), merged = new Map<string, EmbeddedOperation>(); for (const operation of [...(stored?.operations ?? []), ...exported]) merged.set(operationKey(operation), operation); generation = Math.max(generation, stored?.generation ?? 0) + 1; lastSyncAt = lastSyncAt ?? stored?.lastSyncAt; remoteGeneration = Math.max(remoteGeneration, stored?.remoteGeneration ?? 0); const journal: LocalMemoryJournal = { version: MEMORY_SCHEMA_VERSION, namespace, generation, operations: [...merged.values()].sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id)), ...(lastSyncAt ? { lastSyncAt } : {}), remoteGeneration }; const temporary = `${storagePath}.${randomUUID()}.tmp`; await writeFile(temporary, `${JSON.stringify(journal)}\n`, { mode: 0o600 }); await chmod(temporary, 0o600); await rename(temporary, storagePath); }); flushing = flushing.then(write, write); await flushing; };
+  const load = async (): Promise<void> => { if (loaded) return; if (localDurable) { const stored = await readJournal(); if (stored) { generation = stored.generation ?? 1; remoteGeneration = stored.remoteGeneration ?? 0; lastSyncAt = stored.lastSyncAt; if (stored.operations.length) await db.applyOperations(stored.operations); } } loaded = true; };
+  const provenanceFor = async (collection: string, item: Record<string, any>): Promise<void> => { if (!currentProjectId || collection === "fact_provenance") return; const factId = String(item.id), id = `provenance:${collection}:${factId}`, derived = collection.includes("pattern") || collection.includes("prediction") || collection.includes("routing") || item.relation === "CO_CHANGED" || String(item.relation ?? "").startsWith("LIKELY_"), record: MemoryFactProvenance = { id, factId, collection, projectId: currentProjectId, source: typeof item.source === "string" ? item.source : item.commitId ? "git" : "runtime", observedAt: item.lastObservedAt ?? item.timestamp ?? item.createdAt ?? new Date().toISOString(), confidence: typeof item.confidence === "number" ? item.confidence : 1, generation, evidence: [item.commitId, ...(Array.isArray(item.evidence) ? item.evidence.map((value: any) => typeof value === "string" ? value : value?.id ?? value?.description).filter(Boolean) : [])].filter(Boolean), classification: derived ? "DERIVED" : "FACTUAL", ...(item.taskId ? { taskId: String(item.taskId) } : {}), ...(item.commitId ? { commitId: String(item.commitId) } : {}), ...(item.sandboxId ? { sandboxId: String(item.sandboxId) } : {}) }; const found = await factProvenance.find({ id }); if (found.length) await factProvenance.update(id, record); else await factProvenance.insert(record, id); };
+
+  const upsert = async <T extends { id: string }>(collection: any, item: T, collectionName = namedCollections.get(collection) ?? "fact"): Promise<void> => {
     const found = await collection.find({ id: item.id });
     if (found.length) await collection.update(item.id, item); else await collection.insert(item, item.id);
+    await provenanceFor(collectionName, item); await flush();
   };
   const projectId = (): string => { if (!currentProjectId) throw new Error("Project memory not initialized"); return currentProjectId; };
   const emit = (type: string, ids: string[]): void => {
@@ -111,9 +145,17 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
     const projectChanges = await changes.find({ projectId: projectId() });
     return selected.map((commit) => ({ commit, files: projectChanges.filter((change) => change.commitId === commit.id), revertedBy: commit.revertedBy }));
   };
+  const clearCollection = async (collection: any, query: Record<string, unknown> = { projectId: projectId() }): Promise<number> => { const records = await collection.find(query); for (const record of records) await collection.delete(record.id); return records.length; };
+  const resetGroups: Record<Exclude<MemoryResetScope, "all">, any[]> = {
+    graph: [files, symbols], history: [commits, changes, cursors, cochanges],
+    tasks: [tasks, taskCheckpoints, taskEvents, observations, plans, planSteps, toolRuns, evidenceRecords, mutationProposals, filePatches, mutationTransactions, verificationRuns, repairAttempts, autonomousExecutions, executionDecisions, assumptionChecks, reviewResults],
+    outcomes: [taskOutcomes, outcomeSignals, contextOutcomes, successfulPatterns, failurePatterns, impactPredictions, actualChanges, predictionOutcomes, changePatterns, executionPatterns],
+    routing: [routingDecisions, routingFallbacks],
+    execution: [sandboxes, sandboxFingerprints, sandboxCommands, processObservations, filesystemChanges, networkObservations, sandboxResources, sandboxSnapshots, sandboxEvents]
+  };
 
   return {
-    async initialize(project) { currentProjectId = project.id; await upsert(projects, project); },
+    async initialize(project) { await load(); currentProjectId = project.id; const metadata = (await memoryMetadata.find({ id: `generation:${project.id}` }))[0]; generation = Math.max(generation, metadata?.generation ?? 1); await upsert(projects, project); },
     async getProject() { const found = await projects.find({ id: projectId() }); if (!found[0]) throw new Error("Project not found"); return found[0]; },
     async upsertFile(file) { await upsert(files, { ...file, projectId: projectId() }); emit("file", [file.id]); },
     async upsertSymbol(symbol) { await upsert(symbols, { ...symbol, projectId: projectId() }); emit("symbol", [symbol.id]); },
@@ -165,7 +207,7 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
       if (reverted) {
         const originals = await commits.find({ sha: reverted, projectId: id });
         if (originals[0]) {
-          await commits.update(originals[0].id, { revertedBy: commit.id });
+          await commits.update(originals[0].id, { revertedBy: commit.id }); await provenanceFor("commits", { ...originals[0], revertedBy: commit.id }); await flush();
           await upsert(edges, { id: `edge:revert:${originals[0].id}:${commit.id}`, projectId: id, from: originals[0].id,
             to: commit.id, relation: "REVERTED_BY", confidence: 1, source: "git", commitId: commit.id });
         }
@@ -219,7 +261,37 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
     },
     async getCapabilities() {
       const runtime = db.runtime();
-      return { persistent: runtime.persistent, reactive: runtime.reactive, temporal: true, graph: true };
+      const persistent = Boolean(options.server) || localDurable;
+      return { persistent, crossProcess: persistent, reactive: runtime.reactive, temporal: true, graph: true, outcomes: true, execution: true, sync: Boolean(options.server || options.hybrid), storage: options.server ? "feltdb-remote" : options.hybrid ? "feltdb-hybrid" : localDurable ? "feltdb-local-journal" : "memory" };
+    },
+    async persist() { await flush(); },
+    async beginGeneration(reason) { generation++; await upsert(memoryMetadata, { id: `generation:${projectId()}`, projectId: projectId(), generation, reason, updatedAt: new Date().toISOString() }); emit("memory_generation", [String(generation)]); return generation; },
+    async getGeneration() { return generation; },
+    async getFactProvenance(factId) { return (await factProvenance.find({ factId, projectId: projectId() })).sort((a, b) => b.generation - a.generation); },
+    async getGraphStatistics() { const [projectFiles, projectSymbols, projectEdges, projectCommits] = await Promise.all([files.find({ projectId: projectId() }), symbols.find({ projectId: projectId() }), edges.find({ projectId: projectId() }), commits.find({ projectId: projectId() })]), relationCounts: Record<string, number> = {}; for (const edge of projectEdges) relationCounts[edge.relation] = (relationCounts[edge.relation] ?? 0) + 1; return { generation, nodes: { files: projectFiles.length, symbols: projectSymbols.length, commits: projectCommits.length, tasks: (await tasks.find({ projectId: projectId() })).length, models: (await modelExecutions.find({ projectId: projectId() })).length, mutations: (await mutationProposals.find({ projectId: projectId() })).length, verifications: (await verificationRuns.find({ projectId: projectId() })).length, repairs: (await repairAttempts.find({ projectId: projectId() })).length, sandboxes: (await sandboxes.find({ projectId: projectId() })).length, patterns: (await successfulPatterns.find({ projectId: projectId() })).length + (await changePatterns.find({ projectId: projectId() })).length, failures: (await failurePatterns.find({ projectId: projectId() })).length }, relationships: relationCounts }; },
+    async getStatus() { const [capabilities, statistics, taskList, cursor] = await Promise.all([this.getCapabilities(), this.getGraphStatistics(), this.listTasks(1), this.getHistoryCursor()]); let storageBytes = 0, lastIndexedAt: string | undefined; if (localDurable) try { const details = await stat(storagePath); storageBytes = details.size; if (cursor) lastIndexedAt = details.mtime.toISOString(); } catch {} const sync: SyncState = { projectId: projectId(), localGeneration: generation, remoteGeneration, ...(lastSyncAt ? { lastSyncAt } : {}), pendingChanges: options.hybrid && generation > remoteGeneration ? generation - remoteGeneration : 0, conflicts: 0, status: options.hybrid ? (lastSyncAt && generation <= remoteGeneration ? "synced" : "pending") : options.server ? "synced" : "local-only" }; return { projectId: projectId(), provider: options.server ? "hosted" : options.hybrid ? "hybrid" : options.ephemeral ? "ephemeral" : "local", schemaVersion: MEMORY_SCHEMA_VERSION, generation, storageBytes, integrity: "ok", ...(lastIndexedAt ? { lastIndexedAt } : {}), ...(taskList[0] ? { lastTaskId: taskList[0].id } : {}), sync, capabilities, statistics }; },
+    async sync() { if (options.hybrid && remoteDb) { await flush(); const local = await db.exportOperations(); await remoteDb.applyOperations(local); const remote = await remoteDb.exportOperations(); await db.applyOperations(remote); remoteGeneration = generation; lastSyncAt = new Date().toISOString(); await flush(); return { projectId: projectId(), localGeneration: generation, remoteGeneration, lastSyncAt, pendingChanges: 0, conflicts: 0, status: "synced" }; } if (options.server) { lastSyncAt = new Date().toISOString(); remoteGeneration = generation; return { projectId: projectId(), localGeneration: generation, remoteGeneration, lastSyncAt, pendingChanges: 0, conflicts: 0, status: "synced" }; } return { projectId: projectId(), localGeneration: generation, remoteGeneration: 0, pendingChanges: 0, conflicts: 0, status: "local-only" }; },
+    async exportMemory() { const operations = (await db.exportOperations()).map((operation) => ({ ...operation, ...(operation.value === undefined ? {} : { value: safeExportValue(operation.value) }) })); const latest = operations.reduce((timestamp, operation) => Math.max(timestamp, operation.timestamp), 0); return { format: "easy-llm-code-project-memory", schemaVersion: MEMORY_SCHEMA_VERSION, projectId: projectId(), namespace, generation, exportedAt: new Date(latest).toISOString(), operations: operations.sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id)) }; },
+    async importMemory(snapshot: MemoryExport) { if (snapshot.format !== "easy-llm-code-project-memory" || snapshot.schemaVersion > MEMORY_SCHEMA_VERSION) throw new Error("MEMORY_EXPORT_UNSUPPORTED"); if (snapshot.projectId !== projectId()) throw new Error("MEMORY_PROJECT_MISMATCH"); await db.applyOperations(snapshot.operations); generation = Math.max(generation, snapshot.generation); await flush(); emit("memory_import", [String(snapshot.operations.length)]); },
+    async compact(policy = {}) { const executionLimit = policy.executionEvents ?? 10_000, commandLimit = policy.commandExecutions ?? 10_000, removed: Record<string, number> = { sandbox_events: 0, sandbox_commands: 0 }; const events = (await sandboxEvents.find({ projectId: projectId() })).sort((a, b) => b.timestamp.localeCompare(a.timestamp) || b.id.localeCompare(a.id)); for (const event of events.slice(executionLimit)) { await sandboxEvents.delete(event.id); removed.sandbox_events++; } const commands = await sandboxCommands.find({ projectId: projectId() }), failures = commands.filter((command) => command.status !== "completed" || (command.exitCode ?? 0) !== 0), successful = commands.filter((command) => command.status === "completed" && (command.exitCode ?? 0) === 0).sort((a, b) => b.id.localeCompare(a.id)); for (const command of successful.slice(commandLimit)) { await sandboxCommands.delete(command.id); removed.sandbox_commands++; } if (removed.sandbox_events || removed.sandbox_commands) await flush(); return { removed, preservedFailures: failures.length, generation }; },
+    async reset(scope = "all") {
+      const removed: Record<string, number> = {}, selected = scope === "all" ? [...new Set(Object.values(resetGroups).flat())] : resetGroups[scope], removedEdgeIds = new Set<string>();
+      const clearedNames = new Set(selected.map((collection) => namedCollections.get(collection) ?? "unknown"));
+      for (const collection of selected) { const name = namedCollections.get(collection) ?? "unknown"; removed[name] = collection === cursors ? await clearCollection(collection, { id: projectId() }) : await clearCollection(collection); }
+      if (scope === "all") { const records = await edges.find({ projectId: projectId() }); records.forEach((edge) => removedEdgeIds.add(edge.id)); removed.edges = await clearCollection(edges); clearedNames.add("edges"); }
+      else if (scope === "graph") { const records = (await edges.find({ projectId: projectId() })).filter((edge: ProjectEdge) => edge.source === "filesystem" || edge.source === "ast"); for (const edge of records) { removedEdgeIds.add(edge.id); await edges.delete(edge.id); } removed.edges = records.length; }
+      else if (scope === "history") { const records = (await edges.find({ projectId: projectId() })).filter((edge: ProjectEdge) => edge.source === "git"); for (const edge of records) { removedEdgeIds.add(edge.id); await edges.delete(edge.id); } removed.edges = records.length; }
+      const provenance = await factProvenance.find({ projectId: projectId() });
+      const forgotten = scope === "all" ? provenance : provenance.filter((record) => clearedNames.has(record.collection) || (record.collection === "edges" && removedEdgeIds.has(record.factId)));
+      for (const record of forgotten) await factProvenance.delete(record.id); removed.fact_provenance = forgotten.length;
+      await this.beginGeneration(`reset:${scope}`); await flush(); emit("memory_reset", [scope]); return { scope, removed, generation };
+    },
+    async prepareRebuild() {
+      const removed: Record<string, number> = {}, factualCollections = [...resetGroups.graph, ...resetGroups.history], factualNames = new Set(factualCollections.map((collection) => namedCollections.get(collection) ?? "unknown"));
+      for (const collection of factualCollections) { const name = namedCollections.get(collection) ?? "unknown"; removed[name] = collection === cursors ? await clearCollection(collection, { id: projectId() }) : await clearCollection(collection); }
+      const factualEdges = (await edges.find({ projectId: projectId() })).filter((edge: ProjectEdge) => ["filesystem", "ast", "git"].includes(edge.source)); for (const edge of factualEdges) await edges.delete(edge.id); removed.edges = factualEdges.length;
+      const factualEdgeIds = new Set(factualEdges.map((edge) => edge.id)), staleProvenance = (await factProvenance.find({ projectId: projectId() })).filter((record) => factualNames.has(record.collection) || (record.collection === "edges" && factualEdgeIds.has(record.factId))); for (const record of staleProvenance) await factProvenance.delete(record.id); removed.fact_provenance = staleProvenance.length;
+      generation++; await upsert(memoryMetadata, { id: `generation:${projectId()}`, projectId: projectId(), generation, reason: "rebuild", updatedAt: new Date().toISOString() }); await flush(); emit("memory_rebuild", [String(generation)]); return { scope: "graph", removed, generation };
     },
     async persistPlan(plan) {
       const id = projectId(), priorPlans = await plans.find({ taskId: plan.taskId, projectId: id }); await upsert(plans, { ...plan, projectId: id });
@@ -317,7 +389,7 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
     async findSandboxForTask(taskId) { return (await sandboxes.find({ taskId, projectId: projectId() })).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]; },
     async listSandboxes() { return (await sandboxes.find({ projectId: projectId() })).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); },
     async persistSandboxFingerprint(sandboxId, fingerprint) { const id = projectId(); await upsert(sandboxFingerprints, { ...fingerprint, id: `fingerprint:${sandboxId}`, sandboxId, projectId: id }); await upsert(edges, { id: `edge:sandbox-environment:${sandboxId}`, projectId: id, from: sandboxId, to: `fingerprint:${sandboxId}`, relation: "HAS_ENVIRONMENT", confidence: 1, source: "agent" }); emit("sandbox_fingerprint", [sandboxId]); },
-    async persistSandboxCommand(result) { const id = projectId(); await upsert(sandboxCommands, { ...result, stdout: result.stdout.slice(0, 4_000), stderr: result.stderr.slice(0, 4_000), projectId: id }); await upsert(edges, { id: `edge:sandbox-command:${result.sandboxId}:${result.id}`, projectId: id, from: result.sandboxId, to: result.id, relation: "HAS_EXECUTION", confidence: 1, source: "agent" }); emit("sandbox_command", [result.id]); },
+    async persistSandboxCommand(result) { const id = projectId(); await upsert(sandboxCommands, { ...result, stdout: redactSensitiveText(result.stdout).slice(0, 4_000), stderr: redactSensitiveText(result.stderr).slice(0, 4_000), projectId: id }); await upsert(edges, { id: `edge:sandbox-command:${result.sandboxId}:${result.id}`, projectId: id, from: result.sandboxId, to: result.id, relation: "HAS_EXECUTION", confidence: 1, source: "agent" }); emit("sandbox_command", [result.id]); },
     async getSandboxCommands(sandboxId) { return (await sandboxCommands.find({ sandboxId, projectId: projectId() })).sort((a, b) => a.id.localeCompare(b.id)); },
     async persistProcessObservation(observation) { const id = projectId(); await upsert(processObservations, { ...observation, projectId: id }); await upsert(edges, { id: `edge:sandbox-process:${observation.sandboxId}:${observation.id}`, projectId: id, from: observation.sandboxId, to: observation.id, relation: "OBSERVED_PROCESS", confidence: 1, source: "agent" }); },
     async getProcessObservations(sandboxId) { return processObservations.find({ sandboxId, projectId: projectId() }); },

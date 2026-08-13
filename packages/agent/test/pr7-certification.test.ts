@@ -15,7 +15,7 @@ const model = (id: string, options: { reasoning?: boolean; tools?: boolean; visi
   availability: { online: options.status !== "unavailable", status: options.status ?? "available" }, lifecycle: { status: "stable", lastVerifiedAt: "2026-08-13T00:00:00.000Z" }, metadata: {}
 });
 const profile: TaskProfile = { taskType: "bugfix", languages: ["TypeScript"], frameworks: [], subsystem: "auth", estimatedComplexity: "high", requiresReasoning: true, requiresVision: false, requiresTools: true, expectedFiles: 7, expectedChanges: 4, contextSize: 10_000 };
-const memory = async (name: string) => { const value = createFeltDBProjectMemory({ root: `/tmp/${name}`, namespace: name }); await value.initialize({ id: name, root: `/tmp/${name}`, name, detectedLanguages: ["TypeScript"], packageManagers: [] }); return value; };
+const memory = async (name: string) => { const value = createFeltDBProjectMemory({ root: `/tmp/${name}`, namespace: name, ephemeral: true }); await value.initialize({ id: name, root: `/tmp/${name}`, name, detectedLanguages: ["TypeScript"], packageManagers: [] }); return value; };
 
 describe("PR7 outcome-aware deterministic intelligence", () => {
   it("profiles task type, complexity, and hard requirements deterministically", async () => {

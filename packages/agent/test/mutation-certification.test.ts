@@ -25,7 +25,7 @@ const fixture = async () => {
   await writeFile(join(root, "package.json"), JSON.stringify({ name: "mutation-fixture", scripts: { test: "node verify.cjs" } }));
   await exec("git", ["-C", root, "init"]); await exec("git", ["-C", root, "config", "user.email", "test@example.com"]); await exec("git", ["-C", root, "config", "user.name", "Test"]);
   await exec("git", ["-C", root, "add", "."]); await exec("git", ["-C", root, "commit", "-m", "fixture"]);
-  const project = await discoverProject(root), memory = createFeltDBProjectMemory({ root, namespace: `pr5:${Date.now()}:${Math.random()}` });
+  const project = await discoverProject(root), memory = createFeltDBProjectMemory({ root, namespace: `pr5:${Date.now()}:${Math.random()}`, ephemeral: true });
   await memory.initialize(project); await indexProjectIntoMemory(root, project, memory);
   const plan: AgentPlan = { id: "plan", taskId: "task", objective: "Change value", assumptions: [], risks: [], expectedFiles: ["src/value.ts"], verification: [],
     steps: [{ id: "analyze", order: 1, action: "analyze", description: "Change value", target: "src/value.ts", dependencies: [], evidence: ["file:src/value.ts"] }] };

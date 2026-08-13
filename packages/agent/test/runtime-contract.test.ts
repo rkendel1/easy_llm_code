@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
@@ -18,17 +19,18 @@ describe("FeltDB runtime and dependency contract", () => {
     expect(manifest.dependencies).toEqual({ "@easy-llm/code-ide": "0.1.0", "@easy-llm/llm": "0.1.7", "@feltdb/core": "0.2.0" });
   });
 
-  it("reports zero-config memory as reactive, temporal, graph-backed, and ephemeral", async () => {
-    const memory = createFeltDBProjectMemory({ root, namespace: `ephemeral-capability:${Date.now()}` });
-    expect(await memory.getCapabilities()).toEqual({ persistent: false, reactive: true, temporal: true, graph: true });
+  it("reports explicit ephemeral memory as a degraded non-persistent mode", async () => {
+    const memory = createFeltDBProjectMemory({ root, namespace: `ephemeral-capability:${Date.now()}`, ephemeral: true });
+    expect(await memory.getCapabilities()).toEqual({ persistent: false, crossProcess: false, reactive: true, temporal: true, graph: true, outcomes: true, execution: true, sync: false, storage: "memory" });
   });
 
-  it("does not retain observations in a new ephemeral process-equivalent instance", async () => {
-    const namespace = `ephemeral-restart:${Date.now()}`;
-    const prelude = `import { createFeltDBProjectMemory } from ${JSON.stringify(memoryModule)}; import { discoverProject } from ${JSON.stringify(discoveryModule)}; const root=${JSON.stringify(root)}; const namespace=${JSON.stringify(namespace)}; const project=await discoverProject(root);`;
-    await exec(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", `${prelude} const memory=createFeltDBProjectMemory({root,namespace}); await memory.initialize(project); await memory.upsertTask({id:'restart-task',request:'remember',status:'completed',createdAt:new Date().toISOString()}); await memory.recordObservation({id:'restart-observation',taskId:'restart-task',type:'agent_analysis',content:'remembered',timestamp:new Date().toISOString()});`]);
-    const result = await exec(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", `${prelude} const memory=createFeltDBProjectMemory({root,namespace}); await memory.initialize(project); console.log(JSON.stringify(await memory.getTask('restart-task')));`]);
-    expect(result.stdout.trim()).toBe("undefined");
+  it("persists zero-config FeltDB memory across process restarts in an atomic private journal", async () => {
+    const namespace = `local-durable-restart:${Date.now()}`, directory = await mkdtemp(join(tmpdir(), "easy-llm-memory-")), storagePath = join(directory, "project.json");
+    const prelude = `import { createFeltDBProjectMemory } from ${JSON.stringify(memoryModule)}; import { discoverProject } from ${JSON.stringify(discoveryModule)}; const root=${JSON.stringify(root)}; const namespace=${JSON.stringify(namespace)}; const storagePath=${JSON.stringify(storagePath)}; const project=await discoverProject(root);`;
+    await exec(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", `${prelude} const memory=createFeltDBProjectMemory({root,namespace,storagePath}); await memory.initialize(project); await memory.upsertTask({id:'restart-task',request:'remember',status:'completed',createdAt:new Date().toISOString()}); await memory.recordObservation({id:'restart-observation',taskId:'restart-task',type:'agent_analysis',content:'remembered',timestamp:new Date().toISOString()}); await memory.persist();`]);
+    const result = await exec(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", `${prelude} const memory=createFeltDBProjectMemory({root,namespace,storagePath}); await memory.initialize(project); const recalled=await memory.getTask('restart-task'); console.log(JSON.stringify({capabilities:await memory.getCapabilities(),content:recalled?.observations[0]?.content}));`]);
+    expect(JSON.parse(result.stdout)).toMatchObject({ capabilities: { persistent: true, crossProcess: true, storage: "feltdb-local-journal" }, content: "remembered" });
+    expect((await stat(storagePath)).mode & 0o777).toBe(0o600);
   });
 
   it.runIf(Boolean(process.env.FELTDB_URL && process.env.FELTDB_TOKEN))(
