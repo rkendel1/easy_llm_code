@@ -1,0 +1,14 @@
+{
+  "name": "easy-llm-code",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @easy-llm/code-agent",
+    "test": "npm run test -w @easy-llm/code-agent",
+    "code": "npm run code -w @easy-llm/code-agent --"
+  }
+}
