@@ -16,17 +16,27 @@ import type { TaskMode } from "../task/lifecycle.js";
 import { renderAgentEvent } from "../ux/renderer.js";
 import { createTerminalApproval } from "../ux/terminal.js";
 import { renderPerformanceSummary } from "../ux/summaries.js";
+import { createTaskProfile } from "../intelligence/task-profile.js";
+import { selectModel } from "../routing/model-selector.js";
+import { explainRoutingDecision, explainTask } from "../intelligence/explain.js";
+import { createChangeIntelligence } from "../change-intelligence/analyze-impact.js";
+import { mineChangePatterns } from "../change-intelligence/patterns.js";
 
 const args = process.argv.slice(2);
 const rootArg = args.find((arg) => arg.startsWith("--root="));
 const mockMode = args.includes("--mock");
 const jsonMode = args.includes("--json");
 const configuredMode = args.find((arg) => arg.startsWith("--mode="))?.slice("--mode=".length) as TaskMode | undefined;
+const optionValue = (name: string): string | undefined => args.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3) ?? (args.includes(`--${name}`) ? args[args.indexOf(`--${name}`) + 1] : undefined);
+const modelOption = optionValue("model");
+const budgetValue = optionValue("budget"), budgetOption = budgetValue === undefined ? undefined : Number(budgetValue);
+if (budgetOption !== undefined && (!Number.isFinite(budgetOption) || budgetOption < 0)) throw new Error(`Invalid budget: ${budgetValue}`);
 if (configuredMode && !["ask", "plan", "edit", "auto"].includes(configuredMode)) throw new Error(`Invalid task mode: ${configuredMode}`);
 const invocationCwd = process.env.INIT_CWD ?? process.cwd();
 const root = resolve(invocationCwd, rootArg ? rootArg.slice("--root=".length) : process.cwd());
 
-const positional = args.filter((arg) => !arg.startsWith("--"));
+const optionsWithValues = new Set(["--model", "--budget"]);
+const positional = args.filter((arg, index) => !arg.startsWith("--") && !optionsWithValues.has(args[index - 1] ?? ""));
 const requestArg = positional[0];
 
 const printDoctor = async (memory: ReturnType<typeof createFeltDBProjectMemory>): Promise<void> => {
@@ -41,12 +51,18 @@ const printDoctor = async (memory: ReturnType<typeof createFeltDBProjectMemory>)
 };
 
 const printMemory = async (memory: ReturnType<typeof createFeltDBProjectMemory>): Promise<void> => {
+  if (positional[1] === "graph") { const edges = await memory.listRelationships(), predicted = edges.filter((edge) => edge.relation.startsWith("LIKELY_")); console.log(`Change Intelligence Graph\nFacts: ${edges.length - predicted.length}\nPredictions: ${predicted.length}`); for (const edge of predicted.slice(0, 30)) console.log(`${edge.relation}  ${edge.from} → ${edge.to}  ${Math.round(edge.confidence * 100)}%  (${edge.evidenceCount ?? 0} evidence)`); return; }
+  if (positional[1] === "impact") { const [predictions, outcomes] = await Promise.all([memory.listImpactPredictions(), memory.listPredictionOutcomes()]); console.log(`Impact memory\nPredictions: ${predictions.length}\nOutcomes: ${outcomes.length}`); for (const item of predictions.slice(0, 20)) console.log(`${item.targets.join(", ")} → ${item.affectedFiles.length} files / ${item.affectedTests.length} tests  ${Math.round(item.confidence * 100)}%`); return; }
+  if (positional[1] === "patterns") { const project = await memory.getProject(), generatedAt = new Date(Math.floor(Date.now() / 86_400_000) * 86_400_000).toISOString(); for (const pattern of mineChangePatterns(project.id, await memory.getRecentChanges({ limit: 10_000 }), generatedAt)) await memory.persistChangePattern(pattern); const [patterns, changes] = await Promise.all([memory.listSuccessfulPatterns(), memory.listChangePatterns()]); console.log("Successful patterns"); patterns.forEach((item, index) => console.log(`${index + 1}. ${item.summary}\n   ${item.taskType}${item.subsystem ? ` / ${item.subsystem}` : ""} · Task ${item.taskId}\n   ${item.approach}`)); console.log("Change patterns"); changes.slice(0, 30).forEach((item) => console.log(`${item.target} → ${item.usuallyChanges.slice(0, 5).map((related) => `${related.path} (${Math.round(related.confidence * 100)}%)`).join(", ")}`)); if (!patterns.length && !changes.length) console.log("No patterns recorded yet."); return; }
+  if (positional[1] === "failures") { const patterns = await memory.listFailurePatterns(); console.log("Failure patterns"); patterns.forEach((item, index) => console.log(`${index + 1}. ${item.description}\n   ${item.failureClass}${item.subsystem ? ` / ${item.subsystem}` : ""} · Task ${item.taskId}\n   Avoid: ${item.attemptedApproach}`)); if (!patterns.length) console.log("No failure patterns recorded yet."); return; }
   if (positional[1] === "file" && positional[2]) {
     const history = await memory.getFileHistory(positional[2]);
     const impact = await memory.getChangeImpact([positional[2]]);
     console.log(history.file.path); console.log(`History  ${history.totalCommits} commits`);
     for (const change of history.changes.slice(0, 10)) console.log(`  ${change.commit.sha.slice(0, 8)} ${change.commit.message.split("\n")[0]}`);
     console.log(`Dependents  ${impact.dependents.join(", ") || "none"}`); console.log(`Tests  ${impact.tests.join(", ") || "none"}`);
+    const learned = await createChangeIntelligence({ memory }).analyzeChangeImpact({ files: [positional[2]] });
+    console.log(`Likely impact  ${learned.affectedFiles.map((item) => `${item.path} (${Math.round(item.confidence * 100)}%)`).join(", ") || "none"}`);
     return;
   }
   if (positional[1] === "changes") {
@@ -91,7 +107,8 @@ const main = async (): Promise<void> => {
           risks: [{ id: "risk", description: "Existing behavior may be relied upon", severity: "medium", evidence: [selected[0]?.id ?? fallback] }], expectedFiles: selected.map((file) => file.path),
           verification: [{ id: "verify", description: "Review relevant tests", evidence: [selected.at(-1)?.id ?? fallback] }] };
       } : undefined,
-      approval: async (input) => input.mode === "auto" || args.includes("--yes") ? "approved" : terminalApproval(input)
+      approval: async (input) => input.mode === "auto" || args.includes("--yes") ? "approved" : terminalApproval(input),
+      routing: { model: modelOption, budget: budgetOption }
     });
     runner.subscribe((event) => console.log(jsonMode ? JSON.stringify(event) : renderAgentEvent(event)));
     const onInterrupt = (): void => runner.cancel(); process.once("SIGINT", onInterrupt);
@@ -106,6 +123,25 @@ const main = async (): Promise<void> => {
   };
 
   if (requestArg === "memory") { await printMemory(memory); return; }
+  if (requestArg === "route") {
+    const request = positional.slice(1).join(" "); if (!request) throw new Error("Usage: llm-code route [--budget 0.10] [--model auto|cheap|fast|reasoning|MODEL] \"your request\"");
+    const context = await createContextEngine({ memory }).build({ request });
+    const profile = await createTaskProfile(request, project, context);
+    const decision = await selectModel(memory, { taskId: `route-preview:${Date.now()}`, profile, model: modelOption, budget: budgetOption });
+    console.log(jsonMode ? JSON.stringify(decision, null, 2) : explainRoutingDecision(decision)); return;
+  }
+  if (requestArg === "impact") {
+    const request = positional.slice(1).join(" "); if (!request) throw new Error("Usage: llm-code impact \"change request or file path\"");
+    const exact = (await memory.listProjectFiles()).filter((file) => request === file.path || request === file.id).map((file) => file.path);
+    const context = exact.length ? undefined : await createContextEngine({ memory }).build({ request });
+    const targets = exact.length ? exact : context!.files.slice(0, 3).map((file) => file.path);
+    const profile = await createTaskProfile(request, project, context ?? await createContextEngine({ memory }).build({ request }));
+    const analysis = await createChangeIntelligence({ memory }).analyzeChangeImpact({ files: targets, taskType: profile.taskType, taskId: "impact-preview", persist: true });
+    if (jsonMode) console.log(JSON.stringify({ type: "impact", ...analysis }));
+    else { console.log("🔍 Change Impact\nTarget"); for (const target of analysis.targets) console.log(`  ${target}`); console.log("Likely affected"); for (const item of analysis.affectedFiles) console.log(`  ${item.confidence >= .75 ? "HIGH" : item.confidence >= .5 ? "MED " : "LOW "}  ${item.path}\n        ${Math.round(item.confidence * 100)}% confidence · ${item.evidenceCount} observations\n        ${item.evidence.map((entry) => entry.description).join("; ")}`); console.log("Likely tests"); for (const item of analysis.affectedTests) console.log(`  ${item.path}`); console.log(`Risk\n  ${analysis.confidence >= .75 ? "HIGH" : analysis.confidence >= .5 ? "MEDIUM" : "LOW"}`); }
+    return;
+  }
+  if (requestArg === "why" && positional[1]) { console.log(await explainTask(memory, positional[1])); return; }
   if (requestArg === "diff") {
     const result = await gitDiffTool.execute({}, { root }); console.log(result.diff || "No working-tree diff."); return;
   }

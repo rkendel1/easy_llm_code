@@ -10,11 +10,11 @@ import { applyUnifiedPatch } from "./patch.js";
 import { hashContent } from "./validate.js";
 import type { MutationProposal } from "./types.js";
 
-export type MutationLlm = (input: { plan: AgentPlan; context: IntelligentContextBundle; failure?: VerificationRun; prompt: string }) => Promise<unknown>;
+export type MutationLlm = (input: { plan: AgentPlan; context: IntelligentContextBundle; failure?: VerificationRun; prompt: string; model?: string }) => Promise<unknown>;
 interface MutationPlannerOptions { root: string; memory: ProjectMemory; llm?: MutationLlm }
 const responseText = (value: unknown): string | undefined => { const item = value as { text?: string; output_text?: string; content?: string; message?: { content?: string } }; return item.text ?? item.output_text ?? item.content ?? item.message?.content; };
 const parse = (value: unknown): MutationProposal => { if (value && typeof value === "object" && "files" in value) return value as MutationProposal; const text = typeof value === "string" ? value : responseText(value); if (!text) throw new Error("Mutation model returned no proposal"); return JSON.parse(text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "")); };
-const defaultLlm: MutationLlm = async ({ prompt }) => routedLlm({ task: "mutation", capability: "reasoning", messages: [{ role: "user", content: prompt }] } as never);
+const defaultLlm: MutationLlm = async ({ prompt, model }) => routedLlm({ task: "mutation", capability: "reasoning", model, messages: [{ role: "user", content: prompt }] } as never);
 const promptFor = (plan: AgentPlan, context: IntelligentContextBundle, failure?: VerificationRun): string => [
   "Return one strict JSON MutationProposal. Propose unified diffs only; never request filesystem or shell access.",
   "Schema: {id,taskId,planId,files:[{path,operation,oldPath?,beforeHash?,afterHash?,patch}],rationale,expectedChanges,verification:[{id,command,purpose,required,timeoutMs}]}",
@@ -23,9 +23,9 @@ const promptFor = (plan: AgentPlan, context: IntelligentContextBundle, failure?:
 ].filter(Boolean).join("\n\n");
 
 export const createMutationPlanner = (options: MutationPlannerOptions) => ({
-  async propose(plan: AgentPlan, context: IntelligentContextBundle, failure?: VerificationRun): Promise<MutationProposal> {
+  async propose(plan: AgentPlan, context: IntelligentContextBundle, failure?: VerificationRun, model?: string): Promise<MutationProposal> {
     const started = Date.now();
-    const raw = await (options.llm ?? defaultLlm)({ plan, context, failure, prompt: promptFor(plan, context, failure) });
+    const raw = await (options.llm ?? defaultLlm)({ plan, context, failure, prompt: promptFor(plan, context, failure), model });
     const parsed = parse(raw); const proposal: MutationProposal = { ...parsed, id: parsed.id || `proposal:${randomUUID()}`, taskId: plan.taskId, planId: plan.id,
       files: parsed.files ?? [], expectedChanges: parsed.expectedChanges ?? [], verification: parsed.verification ?? [], rationale: parsed.rationale ?? "" };
     for (const file of proposal.files) {
@@ -35,7 +35,9 @@ export const createMutationPlanner = (options: MutationPlannerOptions) => ({
       if (file.operation !== "delete") file.afterHash = hashContent(after);
     }
     await options.memory.persistMutationProposal(proposal);
-    await options.memory.recordModelExecution({ id: `model:${proposal.id}`, taskId: plan.taskId, phase: failure ? "repair" : "mutation", latencyMs: Date.now() - started, inputTokens: context.estimatedTokens });
+    const metadata = raw as { model?: string; provider?: string; usage?: { inputTokens?: number; outputTokens?: number; cost?: number } };
+    await options.memory.recordModelExecution({ id: `model:${proposal.id}`, taskId: plan.taskId, phase: failure ? "repair" : "mutation", model: metadata.model ?? model, provider: metadata.provider,
+      latencyMs: Date.now() - started, inputTokens: metadata.usage?.inputTokens ?? context.estimatedTokens, outputTokens: metadata.usage?.outputTokens, estimatedCost: metadata.usage?.cost });
     return proposal;
   }
 });

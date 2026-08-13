@@ -9,6 +9,11 @@ import type { FilePatch, MutationProposal, MutationTransaction, RepairAttempt, T
 import type { VerificationRun } from "../verification/types.js";
 import type { TaskCheckpoint } from "../task/checkpoint.js";
 import type { PersistedAgentEvent } from "../task/events.js";
+import type { OutcomeSignal, ContextOutcome } from "../intelligence/outcome-model.js";
+import type { RoutingDecision, RoutingFallback } from "../routing/decision.js";
+import type { SuccessfulPattern } from "./successful-patterns.js";
+import type { FailurePattern } from "./failure-patterns.js";
+import type { ActualChange, ChangePattern, ImpactPrediction, PredictionOutcome } from "../change-intelligence/types.js";
 
 interface StoredObservation extends Observation { id: string; projectId: string }
 interface StoredChange extends FileChangeRecord { projectId: string }
@@ -59,6 +64,16 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
   const taskOutcomes = db.collection<TaskOutcome & { id: string; taskId: string; projectId: string }>("task_outcomes");
   const taskCheckpoints = db.collection<TaskCheckpoint & { id: string; projectId: string }>("task_checkpoints");
   const taskEvents = db.collection<PersistedAgentEvent & { projectId: string }>("task_events");
+  const outcomeSignals = db.collection<OutcomeSignal & { id: string; projectId: string }>("outcome_signals");
+  const contextOutcomes = db.collection<ContextOutcome & { id: string; projectId: string }>("context_outcomes");
+  const successfulPatterns = db.collection<SuccessfulPattern & { projectId: string }>("successful_patterns");
+  const failurePatterns = db.collection<FailurePattern & { projectId: string }>("failure_patterns");
+  const routingDecisions = db.collection<RoutingDecision & { projectId: string }>("routing_decisions");
+  const routingFallbacks = db.collection<RoutingFallback & { projectId: string }>("routing_fallbacks");
+  const impactPredictions = db.collection<ImpactPrediction & { projectId: string }>("impact_predictions");
+  const actualChanges = db.collection<ActualChange & { projectId: string }>("actual_changes");
+  const predictionOutcomes = db.collection<PredictionOutcome & { projectId: string }>("prediction_outcomes");
+  const changePatterns = db.collection<ChangePattern & { projectId: string }>("change_patterns");
   let currentProjectId: string | undefined;
   const listeners = new Set<(event: ProjectChangeEvent) => void>();
 
@@ -86,6 +101,10 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
     async getProject() { const found = await projects.find({ id: projectId() }); if (!found[0]) throw new Error("Project not found"); return found[0]; },
     async upsertFile(file) { await upsert(files, { ...file, projectId: projectId() }); emit("file", [file.id]); },
     async upsertSymbol(symbol) { await upsert(symbols, { ...symbol, projectId: projectId() }); emit("symbol", [symbol.id]); },
+    async listProjectFiles() { return files.find({ projectId: projectId() }); },
+    async listProjectSymbols() { return symbols.find({ projectId: projectId() }); },
+    async listRelationships() { return edges.find({ projectId: projectId() }); },
+    async listObservations() { return observations.find({ projectId: projectId() }); },
     async addRelationship(edge) { await upsert(edges, { ...edge, projectId: projectId() }); emit("relationship", [edge.id]); },
     async recordObservation(observation) {
       const id = observation.id ?? `${observation.type}:${observation.taskId}:${observation.timestamp}`;
@@ -113,6 +132,8 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
         await upsert(changes, { ...change, projectId: id });
         await upsert(edges, { id: `edge:changed:${commit.id}:${change.fileId}`, projectId: id, from: commit.id, to: change.fileId,
           relation: "CHANGED", confidence: 1, source: "git", commitId: commit.id, validFrom: commit.sha });
+        await upsert(edges, { id: `edge:changed-in:${commit.id}:${change.fileId}`, projectId: id, from: change.fileId, to: commit.id,
+          relation: "CHANGED_IN", confidence: 1, source: "git", commitId: commit.id, validFrom: commit.sha });
       }
       for (const parent of commit.parentShas) await upsert(edges, { id: `edge:parent:${parent}:${commit.sha}`, projectId: id,
         from: `commit:${parent}`, to: commit.id, relation: "PARENT_OF", confidence: 1, source: "git", commitId: commit.id });
@@ -120,6 +141,8 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
         const pairId = `cochange:${from}:${to}`; const found = await cochanges.find({ id: pairId }); const count = (found[0]?.count ?? 0) + 1;
         await upsert(cochanges, { id: pairId, projectId: id, from, to, count });
         await upsert(edges, { id: `edge:${pairId}`, projectId: id, from, to, relation: "CO_CHANGED",
+          confidence: Math.min(0.99, count / (count + 2)), source: "git", commitId: commit.id });
+        await upsert(edges, { id: `edge:co-changed-with:${from}:${to}`, projectId: id, from, to, relation: "CO_CHANGED_WITH",
           confidence: Math.min(0.99, count / (count + 2)), source: "git", commitId: commit.id });
       }
       const reverted = revertedSha(commit.message);
@@ -185,6 +208,7 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
     async persistPlan(plan) {
       const id = projectId(); await upsert(plans, { ...plan, projectId: id });
       await upsert(edges, { id: `edge:task-plan:${plan.taskId}:${plan.id}`, projectId: id, from: `task:${plan.taskId}`, to: `plan:${plan.id}`, relation: "HAS_PLAN", confidence: 1, source: "agent" });
+      await upsert(edges, { id: `edge:task-produced-plan:${plan.taskId}:${plan.id}`, projectId: id, from: `task:${plan.taskId}`, to: `plan:${plan.id}`, relation: "PRODUCED_PLAN", confidence: 1, source: "agent" });
       for (const step of plan.steps) {
         await upsert(planSteps, { ...step, projectId: id, planId: plan.id });
         await upsert(edges, { id: `edge:plan-step:${plan.id}:${step.id}`, projectId: id, from: `plan:${plan.id}`, to: `step:${step.id}`, relation: "PLAN_STEP", confidence: 1, source: "agent" });
@@ -210,13 +234,52 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
     },
     async getMutationProposal(proposalId) { return (await mutationProposals.find({ id: proposalId, projectId: projectId() }))[0]; },
     async findMutationForPlan(planId) { return (await mutationProposals.find({ planId, projectId: projectId() }))[0]; },
-    async persistMutationTransaction(transaction) { const id = projectId(); await upsert(mutationTransactions, { ...transaction, projectId: id }); await upsert(edges, { id: `edge:mutation-transaction:${transaction.proposalId}:${transaction.id}`, projectId: id, from: `mutation:${transaction.proposalId}`, to: `transaction:${transaction.id}`, relation: "HAS_TRANSACTION", confidence: 1, source: "agent" }); emit("mutation_transaction", [transaction.id]); },
+    async listMutationProposals() { return mutationProposals.find({ projectId: projectId() }); },
+    async persistMutationTransaction(transaction) { const id = projectId(); await upsert(mutationTransactions, { ...transaction, projectId: id }); await upsert(edges, { id: `edge:mutation-transaction:${transaction.proposalId}:${transaction.id}`, projectId: id, from: `mutation:${transaction.proposalId}`, to: `transaction:${transaction.id}`, relation: "HAS_TRANSACTION", confidence: 1, source: "agent" }); for (const patch of transaction.applied) await upsert(edges, { id: `edge:transaction-file:${transaction.id}:${patch.path}`, projectId: id, from: `transaction:${transaction.id}`, to: `file:${patch.path}`, relation: "CHANGED_FILE", confidence: 1, source: "agent" }); emit("mutation_transaction", [transaction.id]); },
     async getMutationTransactions(taskId) { return mutationTransactions.find({ taskId, projectId: projectId() }); },
-    async persistVerificationRun(run) { const id = projectId(); await upsert(verificationRuns, { ...run, projectId: id }); await upsert(edges, { id: `edge:mutation-verification:${run.proposalId}:${run.id}`, projectId: id, from: `mutation:${run.proposalId}`, to: `verification:${run.id}`, relation: "VERIFIED_BY", confidence: 1, source: "agent" }); emit("verification_run", [run.id]); },
+    async persistVerificationRun(run) { const id = projectId(); await upsert(verificationRuns, { ...run, projectId: id }); await upsert(edges, { id: `edge:mutation-verification:${run.proposalId}:${run.id}`, projectId: id, from: `mutation:${run.proposalId}`, to: `verification:${run.id}`, relation: "VERIFIED_BY", confidence: 1, source: "agent" }); await upsert(edges, { id: `edge:task-triggered-verification:${run.taskId}:${run.id}`, projectId: id, from: `task:${run.taskId}`, to: `verification:${run.id}`, relation: "TRIGGERED_VERIFICATION", confidence: 1, source: "agent" }); emit("verification_run", [run.id]); },
     async getVerificationRuns(taskId) { return verificationRuns.find({ taskId, projectId: projectId() }); },
     async persistRepairAttempt(attempt) { const id = projectId(); await upsert(repairAttempts, { ...attempt, projectId: id }); await upsert(edges, { id: `edge:repair:${attempt.id}:${attempt.proposalId}`, projectId: id, from: `repair:${attempt.id}`, to: `mutation:${attempt.proposalId}`, relation: "REPAIR_OF", confidence: 1, source: "agent" }); emit("repair_attempt", [attempt.id]); },
     async persistTaskOutcome(taskId, outcome) { const id = projectId(); await upsert(taskOutcomes, { ...outcome, id: `outcome:${taskId}`, taskId, projectId: id }); await upsert(edges, { id: `edge:task-outcome:${taskId}`, projectId: id, from: `task:${taskId}`, to: `outcome:${taskId}`, relation: "HAS_OUTCOME", confidence: 1, source: "agent" }); emit("task_outcome", [taskId]); },
     async getTaskOutcome(taskId) { return (await taskOutcomes.find({ taskId, projectId: projectId() }))[0]; },
+    async persistOutcomeSignal(signal) {
+      const id = projectId(), signalId = `outcome-signal:${signal.taskId}:${signal.model}`;
+      await upsert(outcomeSignals, { ...signal, id: signalId, projectId: id });
+      await upsert(edges, { id: `edge:signal:${signal.taskId}:${signal.model}`, projectId: id, from: `task:${signal.taskId}`, to: signalId, relation: "RESULTED_IN", confidence: 1, source: "agent" });
+      emit("outcome_signal", [signalId]);
+    },
+    async listOutcomeSignals() { return (await outcomeSignals.find({ projectId: projectId() })).sort((a, b) => b.timestamp.localeCompare(a.timestamp)); },
+    async persistContextOutcome(outcome) { const id = `context-outcome:${outcome.taskId}:${outcome.strategy}`; await upsert(contextOutcomes, { ...outcome, id, projectId: projectId() }); emit("context_outcome", [id]); },
+    async listContextOutcomes(taskId) { const id = projectId(); return taskId ? contextOutcomes.find({ taskId, projectId: id }) : contextOutcomes.find({ projectId: id }); },
+    async persistSuccessfulPattern(pattern) { await upsert(successfulPatterns, { ...pattern, projectId: projectId() }); emit("successful_pattern", [pattern.id]); },
+    async listSuccessfulPatterns() { return (await successfulPatterns.find({ projectId: projectId() })).sort((a, b) => b.timestamp.localeCompare(a.timestamp)); },
+    async persistFailurePattern(pattern) { await upsert(failurePatterns, { ...pattern, projectId: projectId() }); emit("failure_pattern", [pattern.id]); },
+    async listFailurePatterns() { return (await failurePatterns.find({ projectId: projectId() })).sort((a, b) => b.timestamp.localeCompare(a.timestamp)); },
+    async persistRoutingDecision(decision) {
+      const id = projectId(); await upsert(routingDecisions, { ...decision, projectId: id });
+      await upsert(edges, { id: `edge:routing:${decision.taskId}`, projectId: id, from: `task:${decision.taskId}`, to: `model:${decision.selectedModel}`, relation: "ROUTED_TO", confidence: decision.reason.confidence.level === "high" ? 1 : decision.reason.confidence.level === "medium" ? 0.75 : 0.5, source: "agent" }); emit("routing_decision", [decision.id]);
+    },
+    async getRoutingDecision(taskId) { return (await routingDecisions.find({ taskId, projectId: projectId() }))[0]; },
+    async listRoutingDecisions() { return (await routingDecisions.find({ projectId: projectId() })).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); },
+    async persistRoutingFallback(fallback) { const id = projectId(); await upsert(routingFallbacks, { ...fallback, projectId: id }); await upsert(edges, { id: `edge:${fallback.id}`, projectId: id, from: `model:${fallback.originalModel}`, to: `model:${fallback.fallbackModel}`, relation: "FELL_BACK_TO", confidence: 1, source: "agent" }); emit("routing_fallback", [fallback.id]); },
+    async getRoutingFallbacks(taskId) { return (await routingFallbacks.find({ taskId, projectId: projectId() })).sort((a, b) => a.timestamp.localeCompare(b.timestamp)); },
+    async persistImpactPrediction(prediction) {
+      const id = projectId(); await upsert(impactPredictions, { ...prediction, projectId: id });
+      if (prediction.taskId) await upsert(edges, { id: `edge:task-impact:${prediction.taskId}:${prediction.id}`, projectId: id, from: `task:${prediction.taskId}`, to: `prediction:${prediction.id}`, relation: "RELATED_TO_TASK", confidence: 1, source: "agent" });
+      for (const candidate of prediction.affectedFiles) await upsert(edges, { id: `edge:likely-affects:${prediction.id}:${candidate.path}`, projectId: id, from: `prediction:${prediction.id}`, to: `file:${candidate.path}`, relation: "LIKELY_AFFECTS", confidence: candidate.confidence, source: "agent", evidenceCount: candidate.evidenceCount, evidenceTypes: candidate.evidenceTypes, lastObservedAt: prediction.generatedAt, derivedEvidence: candidate.evidence });
+      for (const candidate of prediction.affectedTests) await upsert(edges, { id: `edge:likely-test:${prediction.id}:${candidate.path}`, projectId: id, from: `prediction:${prediction.id}`, to: `file:${candidate.path}`, relation: "LIKELY_REQUIRES_TEST", confidence: candidate.confidence, source: "agent", evidenceCount: candidate.evidenceCount, evidenceTypes: candidate.evidenceTypes, lastObservedAt: prediction.generatedAt, derivedEvidence: candidate.evidence });
+      for (const candidate of prediction.affectedFiles.filter((item) => item.confidence >= .5 && !prediction.affectedTests.some((test) => test.path === item.path))) await upsert(edges, { id: `edge:likely-review:${prediction.id}:${candidate.path}`, projectId: id, from: `prediction:${prediction.id}`, to: `file:${candidate.path}`, relation: "LIKELY_REQUIRES_REVIEW", confidence: candidate.confidence, source: "agent", evidenceCount: candidate.evidenceCount, evidenceTypes: candidate.evidenceTypes, lastObservedAt: prediction.generatedAt, derivedEvidence: candidate.evidence });
+      emit("impact_prediction", [prediction.id]);
+    },
+    async getImpactPrediction(taskId) { return (await impactPredictions.find({ taskId, projectId: projectId() }))[0]; },
+    async listImpactPredictions() { return (await impactPredictions.find({ projectId: projectId() })).sort((a, b) => b.generatedAt.localeCompare(a.generatedAt)); },
+    async persistActualChange(change) { const id = projectId(); await upsert(actualChanges, { ...change, projectId: id }); await upsert(edges, { id: `edge:prediction-actual:${change.predictionId}:${change.id}`, projectId: id, from: `prediction:${change.predictionId}`, to: change.id, relation: "RESULTED_IN", confidence: 1, source: "agent" }); for (const file of change.files) await upsert(edges, { id: `edge:actual-file:${change.id}:${file}`, projectId: id, from: change.id, to: `file:${file}`, relation: "CHANGED_FILE", confidence: 1, source: "agent" }); emit("actual_change", [change.id]); },
+    async getActualChange(taskId) { return (await actualChanges.find({ taskId, projectId: projectId() }))[0]; },
+    async persistPredictionOutcome(outcome) { const id = projectId(); await upsert(predictionOutcomes, { ...outcome, projectId: id }); await upsert(edges, { id: `edge:prediction-outcome:${outcome.predictionId}:${outcome.id}`, projectId: id, from: `prediction:${outcome.predictionId}`, to: outcome.id, relation: "RESULTED_IN", confidence: 1, source: "agent" }); emit("prediction_outcome", [outcome.id]); },
+    async getPredictionOutcomes(taskId) { return predictionOutcomes.find({ taskId, projectId: projectId() }); },
+    async listPredictionOutcomes() { return predictionOutcomes.find({ projectId: projectId() }); },
+    async persistChangePattern(pattern) { await upsert(changePatterns, { ...pattern, projectId: projectId() }); emit("change_pattern", [pattern.id]); },
+    async listChangePatterns() { return changePatterns.find({ projectId: projectId() }); },
     subscribeToProjectChanges(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async queryContext(query: ContextQuery): Promise<ContextBundle> {
       const [projectFiles, projectSymbols, projectEdges, projectCommits, projectChanges, projectObservations, pairs] = await all();

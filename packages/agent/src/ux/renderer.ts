@@ -5,6 +5,8 @@ export const renderAgentEvent = (event: AgentEvent): string => {
     case "task.started": return `┌─ easy-llm-code ──\nTask ${event.taskId}`;
     case "context.started": return "▸ Understanding repository";
     case "context.completed": return `  ✓ ${event.metrics.selectedCount} context items, ~${event.metrics.estimatedTokens.toLocaleString()} tokens, ${(event.metrics.compressionRatio * 100).toFixed(0)}% reduction`;
+    case "routing.completed": return `  ✓ Routed to ${event.provider}/${event.model} (${event.confidence} confidence, ${event.score.toFixed(3)})`;
+    case "impact.completed": return `  ✓ Predicted ${event.affectedFiles} affected files and ${event.affectedTests} tests (${Math.round(event.confidence * 100)}% confidence)`;
     case "planning.started": return "▸ Planning";
     case "plan.created": return `  ✓ Plan ${event.planId}`;
     case "approval.required": return "▸ Changes ready — approval required";

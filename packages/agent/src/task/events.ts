@@ -4,6 +4,8 @@ export type AgentEvent =
   | { type: "task.started"; taskId: string }
   | { type: "context.started" }
   | { type: "context.completed"; metrics: ContextMetrics }
+  | { type: "routing.completed"; model: string; provider: string; score: number; confidence: "low" | "medium" | "high" }
+  | { type: "impact.completed"; predictionId: string; affectedFiles: number; affectedTests: number; confidence: number }
   | { type: "planning.started" }
   | { type: "plan.created"; planId: string }
   | { type: "approval.required" }

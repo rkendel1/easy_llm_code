@@ -30,8 +30,15 @@ const tryResolveImportFileId = (fromPath: string, moduleSpecifier: string, fileI
     return `pkg:${moduleSpecifier}`;
   }
   const basePath = normalize(join(dirname(fromPath), moduleSpecifier)).replace(/\\/g, "/");
+  const baseExtension = extname(basePath), sourceStem = TS_JS_EXTENSIONS.has(baseExtension) ? basePath.slice(0, -baseExtension.length) : basePath;
   const candidates = [
     basePath,
+    `${sourceStem}.ts`,
+    `${sourceStem}.tsx`,
+    `${sourceStem}.js`,
+    `${sourceStem}.jsx`,
+    `${sourceStem}.mjs`,
+    `${sourceStem}.cjs`,
     `${basePath}.ts`,
     `${basePath}.tsx`,
     `${basePath}.js`,

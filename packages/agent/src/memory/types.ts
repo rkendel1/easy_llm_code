@@ -56,7 +56,21 @@ export type ProjectRelation =
   | "HAS_TRANSACTION"
   | "VERIFIED_BY"
   | "REPAIR_OF"
-  | "HAS_OUTCOME";
+  | "HAS_OUTCOME"
+  | "ROUTED_TO"
+  | "RESULTED_IN"
+  | "USED_PATTERN"
+  | "FELL_BACK_TO"
+  | "CHANGED_IN"
+  | "CO_CHANGED_WITH"
+  | "RELATED_TO_TASK"
+  | "USED_CONTEXT"
+  | "PRODUCED_PLAN"
+  | "CHANGED_FILE"
+  | "TRIGGERED_VERIFICATION"
+  | "LIKELY_AFFECTS"
+  | "LIKELY_REQUIRES_TEST"
+  | "LIKELY_REQUIRES_REVIEW";
 
 
 export interface ProjectEdge {
@@ -69,6 +83,10 @@ export interface ProjectEdge {
   validFrom?: string;
   validTo?: string;
   commitId?: string;
+  derivedEvidence?: import("../change-intelligence/types.js").DerivedEvidence[];
+  evidenceCount?: number;
+  evidenceTypes?: import("../change-intelligence/types.js").ImpactEvidenceType[];
+  lastObservedAt?: string;
 }
 
 export interface ContextQuery {

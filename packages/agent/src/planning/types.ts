@@ -11,6 +11,7 @@ export interface VerificationStep { id: string; description: string; target?: st
 export interface AgentPlan {
   id: string; taskId: string; objective: string; assumptions: string[]; steps: PlanStep[];
   risks: Risk[]; expectedFiles: string[]; verification: VerificationStep[];
+  impactAssessment?: import("../change-intelligence/types.js").ImpactAssessment;
 }
 export interface Evidence {
   id: string; taskId: string; source: "file" | "search" | "git" | "test" | "observation";

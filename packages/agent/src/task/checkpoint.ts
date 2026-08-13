@@ -8,4 +8,6 @@ export interface TaskCheckpoint {
   snapshot?: WorkspaceSnapshot;
   resumeState?: TaskState;
   mode?: TaskMode;
+  routingDecisionId?: string;
+  impactPredictionId?: string;
 }
