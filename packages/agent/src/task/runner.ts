@@ -15,7 +15,7 @@ import type { ProjectMemory } from "../memory/project-memory.js";
 import type { VerificationRun } from "../verification/types.js";
 import { detectVerificationCommands } from "../verification/policy.js";
 import type { TaskCheckpoint } from "./checkpoint.js";
-import type { AgentEvent, PersistedAgentEvent } from "./events.js";
+import type { AgentEvent, PersistedAgentEvent, RuntimeEvent } from "./events.js";
 import { classifyTaskFailure, type FailureClass, type TaskMode } from "./lifecycle.js";
 import { transitionTaskState, type TaskState } from "./state-machine.js";
 import { createTaskProfile, type TaskProfile } from "../intelligence/task-profile.js";
@@ -35,6 +35,9 @@ import { runLayeredVerification } from "../autonomy/verification.js";
 import { reviewExecution } from "../autonomy/review.js";
 import type { AutonomousBudget, AutonomousExecution, AutonomyMode, BudgetUsage, RiskAssessment } from "../autonomy/types.js";
 import { refreshContext } from "../autonomy/context-refresh.js";
+import { SandboxManager } from "../sandbox/core/sandbox-manager.js";
+import { LocalProcessSandboxProvider } from "../sandbox/providers/local/local-process-provider.js";
+import type { ResourceLimits, Sandbox, SandboxPolicy } from "../sandbox/core/sandbox-types.js";
 
 export interface TaskRunResult { taskId: string; state: TaskState; checkpoint: TaskCheckpoint; context?: IntelligentContextBundle; impact?: ImpactPrediction; plan?: AgentPlan; proposal?: MutationProposal; outcome?: TaskOutcome; failureClass?: FailureClass; answer?: unknown }
 export interface TaskRunnerOptions {
@@ -43,15 +46,18 @@ export interface TaskRunnerOptions {
   policy?: Partial<TaskPolicy>; approval?: ApprovalHandler;
   routing?: { budget?: number; model?: string; models?: ModelDefinition[] };
   autonomy?: { mode?: AutonomyMode; budget?: Partial<AutonomousBudget> };
+  sandbox?: { manager?: SandboxManager; policy?: Partial<SandboxPolicy>; limits?: Partial<ResourceLimits> };
 }
 
 export const createTaskRunner = (options: TaskRunnerOptions) => {
-  const subscribers = new Set<(event: AgentEvent) => void>(); let cancellationRequested = false, running = false;
+  const subscribers = new Set<(event: RuntimeEvent) => void>(); let cancellationRequested = false, running = false;
   const policy: TaskPolicy = { ...DEFAULT_TASK_POLICY, ...options.policy,
     mutation: { ...DEFAULT_TASK_POLICY.mutation, ...options.policy?.mutation }, execution: { ...DEFAULT_TASK_POLICY.execution, ...options.policy?.execution } };
   const contextEngine = createContextEngine({ memory: options.memory });
-  const planner = createTaskPlanner({ root: options.root, memory: options.memory, contextEngine, llm: options.plannerLlm });
-  const mutationPlanner = createMutationPlanner({ root: options.root, memory: options.memory, llm: options.mutationLlm });
+  let planner = createTaskPlanner({ root: options.root, memory: options.memory, contextEngine, llm: options.plannerLlm });
+  let mutationPlanner = createMutationPlanner({ root: options.root, memory: options.memory, llm: options.mutationLlm });
+  const sandboxManager = options.sandbox?.manager ?? new SandboxManager({ memory: options.memory, provider: new LocalProcessSandboxProvider(), policy: options.sandbox?.policy, limits: options.sandbox?.limits });
+  sandboxManager.subscribe((event) => { for (const subscriber of subscribers) subscriber(event); });
   const changeIntelligence = createChangeIntelligence({ memory: options.memory });
   let autonomousController = createAutonomousController({ memory: options.memory, mode: options.autonomy?.mode, budget: options.autonomy?.budget });
   let sequence = 0;
@@ -65,6 +71,8 @@ export const createTaskRunner = (options: TaskRunnerOptions) => {
   let activeExecution: AutonomousExecution | undefined, activeRisk: RiskAssessment | undefined, activeUsage: BudgetUsage = emptyBudgetUsage();
   let activeReviewFailure = false;
   let activeImpactExpanded = false;
+  let activeSandbox: Sandbox | undefined;
+  const approvalEvent = (proposal: MutationProposal): AgentEvent => ({ type: "approval.required", mutationId: proposal.id, files: proposal.files.map((file) => file.path), verificationPlan: proposal.verification.map((step) => step.command), ...(activeSandbox ? { sandboxId: activeSandbox.id } : {}), ...(activeRisk ? { risk: activeRisk } : {}), ...(activeImpact ? { impact: activeImpact } : {}) });
   let activeRunStartedAt = Date.now(), activeBaseWallClockMs = 0;
   const emit = async (taskId: string, event: AgentEvent): Promise<void> => {
     for (const subscriber of subscribers) subscriber(event);
@@ -75,14 +83,27 @@ export const createTaskRunner = (options: TaskRunnerOptions) => {
     const checkpoint: TaskCheckpoint = { ...prior, taskId, state, attempt, updatedAt: new Date().toISOString() };
     await options.memory.persistTaskCheckpoint(checkpoint); return checkpoint;
   };
+  const bindSandboxWorkspace = async (sandbox: Sandbox): Promise<string> => { const root = await sandboxManager.workspacePath(sandbox.id); planner = createTaskPlanner({ root, memory: options.memory, contextEngine, llm: options.plannerLlm }); mutationPlanner = createMutationPlanner({ root, memory: options.memory, llm: options.mutationLlm }); return root; };
+  const verificationExecutor = () => activeSandbox ? { execute: async (command: { executable: string; args: string[]; command: string; timeoutMs: number }) => { const result = await sandboxManager.execute(activeSandbox!.id, { executable: command.executable, args: command.args, timeoutMs: command.timeoutMs }); return { stepId: "", command: command.command, status: result.status === "completed" ? "passed" as const : result.status === "timed_out" ? "timed_out" as const : result.status === "blocked" ? "denied" as const : "failed" as const, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr, durationMs: result.durationMs, classification: result.failureReason }; } } : undefined;
   const setState = async (taskId: string, request: string, createdAt: string, checkpoint: TaskCheckpoint, next: TaskState, fields: Partial<TaskCheckpoint> = {}): Promise<TaskCheckpoint> => {
     transitionTaskState(checkpoint.state, next);
     await options.memory.upsertTask({ id: taskId, request, status: next, createdAt, completedAt: ["completed", "failed", "cancelled"].includes(next) ? new Date().toISOString() : undefined });
     return save(taskId, next, fields.attempt ?? checkpoint.attempt, { ...checkpoint, ...fields, resumeState: next === "paused" ? fields.resumeState : undefined });
   };
+  const ensureSandbox = async (taskId: string, mode: TaskMode, checkpoint: TaskCheckpoint): Promise<TaskCheckpoint> => {
+    if (mode !== "edit" && mode !== "auto") return checkpoint;
+    if (checkpoint.sandboxId) {
+      activeSandbox = await options.memory.getSandbox(checkpoint.sandboxId);
+      if (!activeSandbox) throw new Error(`SANDBOX_NOT_FOUND: ${checkpoint.sandboxId}`);
+      activeSandbox = await sandboxManager.resume(activeSandbox.id);
+      await bindSandboxWorkspace(activeSandbox); return checkpoint;
+    }
+    const project = await options.memory.getProject(); activeSandbox = await sandboxManager.create({ taskId, projectId: project.id, repositoryPath: options.root }); activeSandbox = await sandboxManager.prepare(activeSandbox.id, { languages: project.detectedLanguages }); activeSandbox = await sandboxManager.start(activeSandbox.id); await bindSandboxWorkspace(activeSandbox);
+    return save(taskId, checkpoint.state, checkpoint.attempt, { ...checkpoint, sandboxId: activeSandbox.id, sandboxSnapshotId: activeSandbox.snapshot?.id });
+  };
   const pauseAtBoundary = async (taskId: string, request: string, createdAt: string, checkpoint: TaskCheckpoint): Promise<TaskCheckpoint | undefined> => {
     if (!cancellationRequested) return undefined;
-    const resumeState = checkpoint.state; const paused = await setState(taskId, request, createdAt, checkpoint, "paused", { resumeState });
+    const resumeState = checkpoint.state; if (activeSandbox?.status === "running") activeSandbox = await sandboxManager.pause(activeSandbox.id); const paused = await setState(taskId, request, createdAt, checkpoint, "paused", { resumeState });
     await emit(taskId, { type: "task.paused", taskId }); return paused;
   };
   const recordIntelligence = async (taskId: string, request: string, outcome: TaskOutcome, failureClass?: FailureClass, failureReason?: string): Promise<void> => {
@@ -110,32 +131,36 @@ export const createTaskRunner = (options: TaskRunnerOptions) => {
       failedFiles: activeProposal?.files.map((file) => file.path) ?? activePlan?.expectedFiles ?? [], repair: outcome.attempts > 1 ? `${outcome.attempts - 1} repair attempt(s)` : undefined, timestamp });
   };
   const complete = async (taskId: string, request: string, createdAt: string, checkpoint: TaskCheckpoint, outcome?: TaskOutcome): Promise<TaskRunResult> => {
+    if (activeSandbox && activeSandbox.status !== "destroyed") await sandboxManager.snapshot(activeSandbox.id, "task-completion");
     const completed = await setState(taskId, request, createdAt, checkpoint, "completed"); if (outcome) await options.memory.persistTaskOutcome(taskId, outcome);
     if (outcome) await recordIntelligence(taskId, request, outcome);
     if (outcome && activeImpact && activeProposal) await recordImpactFeedback(options.memory, activeImpact, activeProposal.files.map((file) => file.path), outcome.verificationPassed, outcome.status === "success");
     if (activeExecution) { activeExecution = await autonomousController.update(activeExecution, activeUsage, "completed"); await emit(taskId, { type: "execution.completed", executionId: activeExecution.id });
       if (activeProfile && activeRisk) { const project = await options.memory.getProject(), verifications = await options.memory.getVerificationRuns(taskId); await options.memory.persistExecutionPattern({ id: `execution-pattern:${taskId}:success:${activeUsage.iterations}`, repositoryId: project.id, taskId, taskType: activeProfile.taskType, subsystem: activeProfile.subsystem, risk: activeRisk.level, strategy: ["context", "impact", "plan", ...(activeUsage.replans ? ["replan"] : []), ...(activeUsage.repairs ? ["repair"] : []), "review"], success: outcome?.status === "success", replans: activeUsage.replans, repairs: activeUsage.repairs, verificationScopes: verifications.map((item) => item.verificationScope ?? "targeted"), timestamp: new Date().toISOString() }); }
     }
-    await emit(taskId, { type: "task.completed", taskId }); return { taskId, state: "completed", checkpoint: completed, impact: activeImpact, outcome };
+    await emit(taskId, { type: "task.completed", taskId }); if (activeSandbox) activeSandbox = await sandboxManager.finalize(activeSandbox.id, true); return { taskId, state: "completed", checkpoint: completed, impact: activeImpact, outcome };
   };
   const fail = async (taskId: string, request: string, createdAt: string, checkpoint: TaskCheckpoint, error: unknown): Promise<TaskRunResult> => {
     const reason = (error as Error).message, failureClass = classifyTaskFailure(error); const failed = await setState(taskId, request, createdAt, checkpoint, "failed");
     const outcome: TaskOutcome = { status: "failure", attempts: checkpoint.attempt + 1, filesChanged: 0, linesChanged: 0, testsPassed: 0, testsFailed: failureClass === "verification" ? 1 : 0, verificationPassed: false, durationMs: Date.now() - Date.parse(createdAt) };
     await options.memory.persistTaskOutcome(taskId, outcome); await recordIntelligence(taskId, request, outcome, failureClass, reason); if (activeImpact && activeProposal) await recordImpactFeedback(options.memory, activeImpact, activeProposal.files.map((file) => file.path), false, false); if (activeExecution) { activeExecution = await autonomousController.update(activeExecution, activeUsage, "failed", reason); if (activeProfile && activeRisk) { const project = await options.memory.getProject(), verifications = await options.memory.getVerificationRuns(taskId); await options.memory.persistExecutionPattern({ id: `execution-pattern:${taskId}:failure:${activeUsage.iterations}`, repositoryId: project.id, taskId, taskType: activeProfile.taskType, subsystem: activeProfile.subsystem, risk: activeRisk.level, strategy: ["context", "impact", "plan", ...(activeUsage.replans ? ["replan"] : []), ...(activeUsage.repairs ? ["repair"] : [])], success: false, replans: activeUsage.replans, repairs: activeUsage.repairs, verificationScopes: verifications.map((item) => item.verificationScope ?? "targeted"), timestamp: new Date().toISOString() }); } } await options.memory.recordObservation({ type: "warning", taskId, content: { failureClass, reason }, timestamp: new Date().toISOString() }); await emit(taskId, { type: "task.failed", taskId, reason });
-    return { taskId, state: "failed", checkpoint: failed, impact: activeImpact, failureClass, outcome };
+    if (activeSandbox && activeSandbox.status !== "destroyed") activeSandbox = await sandboxManager.finalize(activeSandbox.id, false); return { taskId, state: "failed", checkpoint: failed, impact: activeImpact, failureClass, outcome };
   };
 
   const executeFromMutation = async (args: { taskId: string; request: string; createdAt: string; checkpoint: TaskCheckpoint; plan: AgentPlan; proposal: MutationProposal; context?: IntelligentContextBundle; transaction?: MutationTransaction; snapshot?: WorkspaceSnapshot }): Promise<TaskRunResult> => {
     let { checkpoint, proposal } = args; let plan = args.plan, transaction = args.transaction, snapshot = args.snapshot, context = args.context;
+    const executionRoot = activeSandbox ? await sandboxManager.workspacePath(activeSandbox.id) : options.root;
     const pauseForBudget = async (dimensions: string[]): Promise<TaskRunResult> => { await emit(args.taskId, { type: "execution.budget.exhausted", dimensions }); const paused = await setState(args.taskId, args.request, args.createdAt, checkpoint, "paused", { resumeState: checkpoint.state, budgetUsage: activeUsage }); if (activeExecution) activeExecution = await autonomousController.update(activeExecution, activeUsage, "paused", `budget exhausted: ${dimensions.join(", ")}`); await emit(args.taskId, { type: "task.paused", taskId: args.taskId }); return { taskId: args.taskId, state: "paused", checkpoint: paused, plan, proposal, impact: activeImpact }; };
     while (checkpoint.attempt <= policy.maxRepairAttempts) {
       if (checkpoint.state === "mutating") {
         if (activeExecution) { const executions = await options.memory.getModelExecutions(args.taskId); activeUsage = { ...activeUsage, modelSpend: executions.reduce((sum, item) => sum + (item.estimatedCost ?? 0), 0), wallClockMs: activeBaseWallClockMs + Date.now() - activeRunStartedAt }; const exhausted = [activeUsage.mutations >= activeExecution.budget.maxMutations ? "mutations" : "", activeUsage.modelSpend >= activeExecution.budget.maxModelSpend ? "modelSpend" : "", activeUsage.wallClockMs >= activeExecution.budget.maxWallClockMs ? "wallClockMs" : ""].filter(Boolean); if (exhausted.length) return pauseForBudget(exhausted); }
         await emit(args.taskId, { type: "mutation.started" });
-        const validation = await validateMutation(proposal, plan, options.root, policy.mutation);
+        if (activeSandbox) { const durable = await sandboxManager.snapshot(activeSandbox.id, `before-mutation-${checkpoint.attempt}`); checkpoint = await save(args.taskId, checkpoint.state, checkpoint.attempt, { ...checkpoint, sandboxSnapshotId: durable.id }); }
+        const validation = await validateMutation(proposal, plan, executionRoot, policy.mutation);
         if (!validation.valid) throw new Error(`MUTATION_REJECTED: ${validation.issues.map((issue) => issue.code).join(",")}`);
         if (activeExecution) { const projectedFiles = activeUsage.filesChanged + proposal.files.length, projectedLines = activeUsage.linesChanged + validation.files.reduce((sum, item) => sum + item.changedLines, 0), exceeded = [projectedFiles > activeExecution.budget.maxFilesChanged ? "filesChanged" : "", projectedLines > activeExecution.budget.maxLinesChanged ? "linesChanged" : ""].filter(Boolean); if (exceeded.length) return pauseForBudget(exceeded); }
-        const applied = await applyValidatedMutation(options.root, proposal, validation); transaction = applied.transaction; snapshot = applied.snapshot;
+        const applied = await applyValidatedMutation(executionRoot, proposal, validation); transaction = applied.transaction; snapshot = applied.snapshot;
+        if (activeSandbox) await sandboxManager.snapshot(activeSandbox.id, `after-mutation-${checkpoint.attempt}`);
         await options.memory.persistMutationTransaction(transaction);
         if (activeExecution && activeImpact && activeProfile) { const prior = new Set(activeImpact.affectedFiles.filter((item) => item.confidence >= .5).map((item) => item.path)), recalculated = await changeIntelligence.analyzeChangeImpact({ files: proposal.files.map((file) => file.path), taskType: activeProfile.taskType, taskId: args.taskId, persist: true }), addedFiles = recalculated.affectedFiles.filter((item) => item.confidence >= .5 && !prior.has(item.path)).map((item) => item.path), comparable = (await options.memory.listOutcomeSignals()).filter((item) => item.taskType === activeProfile!.taskType && (!activeProfile!.subsystem || item.subsystem === activeProfile!.subsystem)), trusted = await detectVerificationCommands(await options.memory.getProject()), trustedCount = proposal.verification.filter((step) => trusted.some((command) => command.command === step.command)).length; activeImpact = recalculated; activeImpactExpanded = addedFiles.length > 0; activeRisk = autonomousController.assessRisk({ profile: activeProfile, impact: recalculated, files: proposal.files.length, lines: validation.files.reduce((sum, item) => sum + item.changedLines, 0), historicalFailureRate: comparable.length ? comparable.filter((item) => !item.success).length / comparable.length : 0, verificationCommands: trustedCount, dependencyCount: recalculated.affectedFiles.length }); await emit(args.taskId, { type: "impact.recalculated", predictionId: recalculated.id, addedFiles }); await emit(args.taskId, { type: "execution.risk", risk: activeRisk }); }
         if (activeExecution) { const changedLines = validation.files.reduce((sum, item) => sum + item.changedLines, 0); activeUsage = { ...activeUsage, mutations: activeUsage.mutations + 1, filesChanged: activeUsage.filesChanged + proposal.files.length, linesChanged: activeUsage.linesChanged + changedLines, wallClockMs: activeBaseWallClockMs + Date.now() - activeRunStartedAt }; activeExecution = await autonomousController.update(activeExecution, activeUsage); const warning = autonomousController.budgetState(activeUsage).warning; if (warning.length) await emit(args.taskId, { type: "execution.budget.warning", dimensions: warning }); }
@@ -147,7 +172,8 @@ export const createTaskRunner = (options: TaskRunnerOptions) => {
         if (!transaction || !snapshot) throw new Error("RESUME_DATA_MISSING: transaction snapshot");
         if (activeExecution && activeUsage.verificationTimeMs >= activeExecution.budget.maxVerificationTimeMs) return pauseForBudget(["verificationTimeMs"]);
         for (const step of proposal.verification) await emit(args.taskId, { type: "verification.started", command: step.command });
-        const layered = await runLayeredVerification(await options.memory.getProject(), args.taskId, proposal.id, proposal.verification, policy.execution, { risk: activeRisk?.level }), verification = layered.final;
+        const canonicalProject = await options.memory.getProject(), verificationProject = activeSandbox ? { ...canonicalProject, root: executionRoot } : canonicalProject;
+        const layered = await runLayeredVerification(verificationProject, args.taskId, proposal.id, proposal.verification, policy.execution, { risk: activeRisk?.level, executor: verificationExecutor() }), verification = layered.final;
         for (const run of layered.runs) await options.memory.persistVerificationRun(run); for (const escalation of layered.escalations) await emit(args.taskId, { type: "verification.escalated", ...escalation });
         if (activeExecution) { activeUsage = { ...activeUsage, verificationTimeMs: activeUsage.verificationTimeMs + layered.runs.flatMap((run) => run.results).reduce((sum, item) => sum + item.durationMs, 0), wallClockMs: Date.now() - Date.parse(activeExecution.startedAt) }; activeExecution = await autonomousController.update(activeExecution, activeUsage); }
         await emit(args.taskId, { type: "verification.completed", success: verification.passed });
@@ -157,19 +183,20 @@ export const createTaskRunner = (options: TaskRunnerOptions) => {
             const evidence = layered.runs.flatMap((run) => run.results.flatMap((result) => [result.stdout, result.stderr, result.classification ?? ""])).filter(Boolean), checks = checkPlanAssumptions(args.taskId, activeUsage.iterations, plan, evidence);
             for (const check of checks) { await options.memory.persistAssumptionCheck(check); await emit(args.taskId, { type: "assumption.checked", assumptionId: check.assumption.id, status: check.assumption.status }); if (check.assumption.status === "contradicted") await emit(args.taskId, { type: "assumption.contradicted", assumptionId: check.assumption.id, evidence: check.evidence }); }
             const decision = await autonomousController.decide({ taskId: args.taskId, iteration: activeUsage.iterations, risk: activeRisk, budget: activeExecution.budget, usage: activeUsage, verificationPassed: true, assumptionChecks: checks, impactExpanded: activeImpactExpanded }); await emit(args.taskId, { type: "execution.decision", decision });
-            if (decision.action === "replan") { await restoreSnapshot(options.root, transaction, snapshot); await options.memory.persistMutationTransaction(transaction); checkpoint = await setState(args.taskId, args.request, args.createdAt, checkpoint, "repairing", { lastVerificationId: verification.id, transactionId: undefined, snapshot: undefined }); activeReviewFailure = true; continue; }
+            if (decision.action === "replan") { await restoreSnapshot(executionRoot, transaction, snapshot); await options.memory.persistMutationTransaction(transaction); checkpoint = await setState(args.taskId, args.request, args.createdAt, checkpoint, "repairing", { lastVerificationId: verification.id, transactionId: undefined, snapshot: undefined }); activeReviewFailure = true; continue; }
             checkpoint = await setState(args.taskId, args.request, args.createdAt, checkpoint, "reviewing", { lastVerificationId: verification.id }); await emit(args.taskId, { type: "review.started", iteration: activeUsage.iterations });
             const review = reviewExecution({ taskId: args.taskId, iteration: activeUsage.iterations, request: args.request, plan, proposal, impact: activeImpact, verification, assumptions: checks, risk: activeRisk }); await options.memory.persistReviewResult(review); await emit(args.taskId, { type: "review.completed", review });
-            if (review.status === "fail") { await restoreSnapshot(options.root, transaction, snapshot); await options.memory.persistMutationTransaction(transaction); checkpoint = await setState(args.taskId, args.request, args.createdAt, checkpoint, "repairing", { lastVerificationId: verification.id, transactionId: undefined, snapshot: undefined }); activeReviewFailure = true; continue; }
+            if (review.status === "fail") { await restoreSnapshot(executionRoot, transaction, snapshot); await options.memory.persistMutationTransaction(transaction); checkpoint = await setState(args.taskId, args.request, args.createdAt, checkpoint, "repairing", { lastVerificationId: verification.id, transactionId: undefined, snapshot: undefined }); activeReviewFailure = true; continue; }
           }
           transaction.status = "verified"; transaction.completedAt = new Date().toISOString(); await options.memory.persistMutationTransaction(transaction);
+          if (activeSandbox) { const canonicalValidation = await validateMutation(proposal, plan, options.root, policy.mutation); if (!canonicalValidation.valid) throw new Error(`SANDBOX_PROMOTION_CONFLICT: ${canonicalValidation.issues.map((issue) => issue.code).join(",")}`); const promoted = await applyValidatedMutation(options.root, proposal, canonicalValidation); promoted.transaction.status = "verified"; promoted.transaction.completedAt = new Date().toISOString(); await options.memory.persistMutationTransaction(promoted.transaction); }
           const outcome: TaskOutcome = { status: "success", attempts: checkpoint.attempt + 1, filesChanged: proposal.files.length,
             linesChanged: proposal.files.reduce((sum, file) => sum + file.patch.split("\n").filter((line) => /^[+-](?![+-])/.test(line)).length, 0),
             testsPassed: verification.results.filter((result) => result.status === "passed").length, testsFailed: 0, verificationPassed: true, durationMs: Date.now() - Date.parse(args.createdAt) };
           if (checkpoint.attempt > 0) await options.memory.persistRepairAttempt({ id: `repair:${args.taskId}:${checkpoint.attempt}`, taskId: args.taskId, attempt: checkpoint.attempt, proposalId: proposal.id, verificationRunId: verification.id, status: "passed" });
           return complete(args.taskId, args.request, args.createdAt, checkpoint, outcome);
         }
-        await restoreSnapshot(options.root, transaction, snapshot); await options.memory.persistMutationTransaction(transaction);
+        await restoreSnapshot(executionRoot, transaction, snapshot); await options.memory.persistMutationTransaction(transaction);
         await options.memory.persistRepairAttempt({ id: `repair:${args.taskId}:${checkpoint.attempt}`, taskId: args.taskId, attempt: checkpoint.attempt, proposalId: proposal.id, verificationRunId: verification.id, status: "failed" });
         checkpoint = await setState(args.taskId, args.request, args.createdAt, checkpoint, "repairing", { lastVerificationId: verification.id, snapshot: undefined, transactionId: undefined });
         if (checkpoint.attempt >= policy.maxRepairAttempts) return fail(args.taskId, args.request, args.createdAt, checkpoint, new Error(`TASK_FAILED: verification failed after ${checkpoint.attempt + 1} attempts`));
@@ -210,12 +237,13 @@ export const createTaskRunner = (options: TaskRunnerOptions) => {
     return fail(args.taskId, args.request, args.createdAt, checkpoint, new Error("TASK_FAILED: repair attempts exhausted"));
   };
 
-  const start = async (request: string, mode: TaskMode, identity?: { taskId: string; createdAt: string; checkpoint: TaskCheckpoint }): Promise<TaskRunResult> => {
+  const start = async (request: string, mode: TaskMode, identity?: { taskId: string; createdAt: string; checkpoint: TaskCheckpoint }, editorContext?: { activeFile?: string; selection?: unknown; cursor?: unknown; openFiles?: string[] }): Promise<TaskRunResult> => {
     if (running) throw new Error("TASK_RUNNER_BUSY"); running = true; cancellationRequested = false; sequence = 0;
     const taskId = identity?.taskId ?? randomUUID(), createdAt = identity?.createdAt ?? new Date().toISOString(); let checkpoint = identity?.checkpoint ?? await save(taskId, "created", 0, { mode });
-    if (!identity) { await options.memory.upsertTask({ id: taskId, request, status: "created", createdAt }); await emit(taskId, { type: "task.started", taskId }); }
+    if (!identity) { await options.memory.upsertTask({ id: taskId, request, status: "created", createdAt }); await emit(taskId, { type: "task.started", taskId }); if (editorContext) await options.memory.recordObservation({ id: `editor-context:${taskId}`, type: "decision", taskId, content: { source: "ide", ...editorContext }, timestamp: new Date().toISOString(), relatedFiles: [...new Set([editorContext.activeFile, ...(editorContext.openFiles ?? [])].filter((item): item is string => Boolean(item)).map((item) => `file:${item}`))] }); }
     if (mode === "auto" && !identity) { activeExecution = await autonomousController.start(taskId); activeUsage = { ...activeExecution.usage, iterations: 1 }; activeBaseWallClockMs = 0; activeRunStartedAt = Date.now(); activeExecution = await autonomousController.update(activeExecution, activeUsage); checkpoint = await save(taskId, checkpoint.state, checkpoint.attempt, { ...checkpoint, executionId: activeExecution.id, iteration: 1, autonomyMode: activeExecution.mode, budgetUsage: activeUsage }); await emit(taskId, { type: "execution.started", executionId: activeExecution.id, mode: activeExecution.mode }); await emit(taskId, { type: "execution.iteration.started", iteration: 1 }); }
     try {
+      checkpoint = await ensureSandbox(taskId, mode, checkpoint);
       if (checkpoint.state === "created") checkpoint = await setState(taskId, request, createdAt, checkpoint, "contextualizing", { mode });
       await emit(taskId, { type: "context.started" });
       const context = await contextEngine.build({ request }); activeContext = context; await emit(taskId, { type: "context.completed", metrics: context.metrics });
@@ -245,11 +273,11 @@ export const createTaskRunner = (options: TaskRunnerOptions) => {
       const proposal = (await executeWithModelFallback(options.memory, activeDecision, (candidate) => mutationPlanner.propose(planned.plan, context, undefined, candidate.model))).value; activeProposal = proposal;
       const proposedLines = proposal.files.reduce((sum, file) => sum + file.patch.split("\n").filter((line) => /^[+-](?![+-])/.test(line)).length, 0);
       if (mode === "auto") { const comparable = (await options.memory.listOutcomeSignals()).filter((item) => item.taskType === activeProfile!.taskType && (!activeProfile!.subsystem || item.subsystem === activeProfile!.subsystem)), trusted = await detectVerificationCommands(project), trustedCount = proposal.verification.filter((step) => trusted.some((command) => command.command === step.command)).length; activeRisk = autonomousController.assessRisk({ profile: activeProfile, impact, files: proposal.files.length, lines: proposedLines, historicalFailureRate: comparable.length ? comparable.filter((item) => !item.success).length / comparable.length : 0, verificationCommands: trustedCount, dependencyCount: impact.affectedFiles.length }); await emit(taskId, { type: "execution.risk", risk: activeRisk }); }
-      checkpoint = await setState(taskId, request, createdAt, checkpoint, "awaiting_approval", { planId: planned.plan.id, proposalId: proposal.id, riskAssessment: activeRisk, budgetUsage: activeUsage }); await emit(taskId, { type: "approval.required" });
+      checkpoint = await setState(taskId, request, createdAt, checkpoint, "awaiting_approval", { planId: planned.plan.id, proposalId: proposal.id, riskAssessment: activeRisk, budgetUsage: activeUsage }); await emit(taskId, approvalEvent(proposal));
       const approvalMode = mode === "auto" && activeRisk && autonomousController.requiresApproval(activeRisk) ? "edit" : mode;
       if (approvalMode === "edit" && mode === "auto" && activeRisk) { const approvalDecision = await autonomousController.requestApproval(taskId, activeUsage.iterations, activeRisk, activeUsage); await emit(taskId, { type: "execution.decision", decision: approvalDecision }); }
       const decision = await (options.approval ?? defaultApproval)({ proposal, plan: planned.plan, mode: approvalMode });
-      if (decision === "rejected") { const cancelled = await setState(taskId, request, createdAt, checkpoint, "cancelled"); return { taskId, state: "cancelled", checkpoint: cancelled, context, plan: planned.plan, proposal }; }
+      if (decision === "rejected") { const cancelled = await setState(taskId, request, createdAt, checkpoint, "cancelled"); if (activeSandbox) activeSandbox = await sandboxManager.finalize(activeSandbox.id, false); await emit(taskId, { type: "task.cancelled", taskId }); return { taskId, state: "cancelled", checkpoint: cancelled, context, plan: planned.plan, proposal }; }
       if (decision === "paused" || cancellationRequested) { cancellationRequested = true; const paused = await pauseAtBoundary(taskId, request, createdAt, checkpoint); return { taskId, state: "paused", checkpoint: paused!, context, plan: planned.plan, proposal }; }
       checkpoint = await setState(taskId, request, createdAt, checkpoint, "mutating");
       return await executeFromMutation({ taskId, request, createdAt, checkpoint, plan: planned.plan, proposal, context });
@@ -262,6 +290,7 @@ export const createTaskRunner = (options: TaskRunnerOptions) => {
     try {
       const [stored, task, existingEvents] = await Promise.all([options.memory.getTaskCheckpoint(taskId), options.memory.getTask(taskId), options.memory.getTaskEvents(taskId)]);
       if (!stored || !task) throw new Error(`TASK_NOT_FOUND: ${taskId}`); sequence = (existingEvents.at(-1)?.sequence ?? -1) + 1;
+      if (stored.sandboxId) { activeSandbox = await options.memory.getSandbox(stored.sandboxId); if (!activeSandbox) throw new Error(`SANDBOX_NOT_FOUND: ${stored.sandboxId}`); activeSandbox = await sandboxManager.resume(activeSandbox.id); await bindSandboxWorkspace(activeSandbox); }
       if (["completed", "cancelled"].includes(stored.state)) return { taskId, state: stored.state, checkpoint: stored, outcome: await options.memory.getTaskOutcome(taskId) };
       if (stored.state === "failed") {
         const execution = await options.memory.getAutonomousExecution(taskId); if (!execution || execution.usage.iterations >= execution.budget.maxIterations) return { taskId, state: "failed", checkpoint: stored, outcome: await options.memory.getTaskOutcome(taskId) };
@@ -277,7 +306,7 @@ export const createTaskRunner = (options: TaskRunnerOptions) => {
       if (checkpoint.state === "planning" && checkpoint.planId) {
         plan = await options.memory.getPlan(checkpoint.planId); if (!plan) throw new Error("RESUME_DATA_MISSING: plan");
         const context = await contextEngine.build({ request }); activeContext = context; proposal = activeDecision ? (await executeWithModelFallback(options.memory, activeDecision, (candidate) => mutationPlanner.propose(plan!, context, undefined, candidate.model))).value : await mutationPlanner.propose(plan, context); activeProposal = proposal;
-        checkpoint = await setState(taskId, request, createdAt, checkpoint, "awaiting_approval", { proposalId: proposal.id }); await emit(taskId, { type: "approval.required" });
+        checkpoint = await setState(taskId, request, createdAt, checkpoint, "awaiting_approval", { proposalId: proposal.id }); await emit(taskId, approvalEvent(proposal));
       } else if (["created", "contextualizing", "planning"].includes(checkpoint.state)) { running = false; return start(request, checkpoint.mode ?? "ask", { taskId, createdAt, checkpoint }); }
       plan ??= checkpoint.planId ? await options.memory.getPlan(checkpoint.planId) : await options.memory.findPlanForTask(taskId);
       proposal ??= checkpoint.proposalId ? await options.memory.getMutationProposal(checkpoint.proposalId) : plan ? await options.memory.findMutationForPlan(plan.id) : undefined;
@@ -285,7 +314,7 @@ export const createTaskRunner = (options: TaskRunnerOptions) => {
       if (!plan || !proposal) throw new Error("RESUME_DATA_MISSING: plan or proposal");
       if (checkpoint.state === "awaiting_approval") {
         const resumeMode = checkpoint.mode === "auto" && activeRisk && autonomousController.requiresApproval(activeRisk) ? "edit" : checkpoint.mode ?? "edit";
-        await emit(taskId, { type: "approval.required" }); const decision = await (options.approval ?? defaultApproval)({ proposal, plan, mode: resumeMode });
+        await emit(taskId, approvalEvent(proposal)); const decision = await (options.approval ?? defaultApproval)({ proposal, plan, mode: resumeMode });
         if (decision !== "approved") { cancellationRequested = true; const paused = await pauseAtBoundary(taskId, request, createdAt, checkpoint); return { taskId, state: "paused", checkpoint: paused!, plan, proposal }; }
         checkpoint = await setState(taskId, request, createdAt, checkpoint, "mutating");
       }
@@ -296,6 +325,6 @@ export const createTaskRunner = (options: TaskRunnerOptions) => {
     } finally { running = false; }
   };
 
-  return { run: (input: { request: string; mode?: TaskMode }) => start(input.request, input.mode ?? "ask"), resume,
-    cancel: () => { cancellationRequested = true; }, subscribe(listener: (event: AgentEvent) => void) { subscribers.add(listener); return () => subscribers.delete(listener); } };
+  return { run: (input: { request: string; mode?: TaskMode; editorContext?: { activeFile?: string; selection?: unknown; cursor?: unknown; openFiles?: string[] } }) => start(input.request, input.mode ?? "ask", undefined, input.editorContext), resume,
+    cancel: () => { cancellationRequested = true; }, subscribe(listener: (event: RuntimeEvent) => void) { subscribers.add(listener); return () => subscribers.delete(listener); } };
 };

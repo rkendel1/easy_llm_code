@@ -1,0 +1,2 @@
+import type { IDECapabilities } from "@easy-llm/code-ide";
+export const ideCapabilities = (overrides: Partial<IDECapabilities> = {}): IDECapabilities => Object.freeze({ workspace: true, openFile: false, revealFile: false, applyEdit: false, diff: false, diagnostics: false, terminal: false, tasks: false, notifications: false, progress: false, webview: false, events: true, selection: false, cursor: false, editorTabs: false, debugging: false, ...overrides });

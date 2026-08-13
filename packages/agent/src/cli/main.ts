@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
+import { realpath } from "node:fs/promises";
 import { createCodeAgent } from "../agent/create-agent.js";
 import { discoverProject } from "../discovery/discover-project.js";
 import { indexProjectIntoMemory } from "../indexing/index-project.js";
@@ -21,6 +22,11 @@ import { selectModel } from "../routing/model-selector.js";
 import { explainRoutingDecision, explainTask } from "../intelligence/explain.js";
 import { createChangeIntelligence } from "../change-intelligence/analyze-impact.js";
 import { mineChangePatterns } from "../change-intelligence/patterns.js";
+import { SandboxManager } from "../sandbox/core/sandbox-manager.js";
+import { LocalProcessSandboxProvider } from "../sandbox/providers/local/local-process-provider.js";
+import { createIDERegistry } from "../ide/registry.js";
+import { readIDEConfiguration, resolveIDESelection, writeIDEConfiguration } from "../ide/config.js";
+import { startRuntimeServer } from "../ide/runtime-server.js";
 
 const args = process.argv.slice(2);
 const rootArg = args.find((arg) => arg.startsWith("--root="));
@@ -36,7 +42,7 @@ if (configuredMode && !["ask", "plan", "edit", "auto"].includes(configuredMode))
 const invocationCwd = process.env.INIT_CWD ?? process.cwd();
 const root = resolve(invocationCwd, rootArg ? rootArg.slice("--root=".length) : process.cwd());
 
-const optionsWithValues = new Set(["--model", "--budget"]);
+const optionsWithValues = new Set(["--model", "--budget", "--type", "--task", "--ide", "--port"]);
 const positional = args.filter((arg, index) => !arg.startsWith("--") && !optionsWithValues.has(args[index - 1] ?? ""));
 const requestArg = positional[0];
 
@@ -83,6 +89,17 @@ const main = async (): Promise<void> => {
   const feltToken = process.env.FELTDB_TOKEN;
   const memory = createFeltDBProjectMemory({ root, server: feltUrl && feltToken ? { url: feltUrl, token: feltToken } : undefined });
   if (requestArg === "doctor") { await printDoctor(memory); return; }
+  if (requestArg === "ide") {
+    const registry = createIDERegistry(), detected = await registry.detect(), available = registry.list(), action = positional[1] ?? (input.isTTY && output.isTTY ? "select" : "status");
+    if (action === "detect") { const value = detected.map(({ adapter, detection }) => ({ id: adapter.id, name: adapter.name, ...detection })); if (jsonMode) console.log(JSON.stringify(value, null, 2)); else { console.log("Detected IDEs"); for (const item of value) console.log(`${item.detected ? "✓" : "○"} ${item.name}${item.path ? `\n  ${item.path}` : ""}`); } return; }
+    if (action === "use") { const id = positional[2]; if (!id) throw new Error("Usage: llm-code ide use <ide>"); registry.get(id); const configuration = await readIDEConfiguration(); await writeIDEConfiguration({ ...configuration, selectedIDE: id }); console.log(jsonMode ? JSON.stringify({ selectedIDE: id }) : `Selected IDE: ${registry.get(id).name}`); return; }
+    if (action === "select") { const choices = available.map((adapter, index) => `${index + 1}. ${adapter.name}`).join("\n"), terminal = createInterface({ input, output }); try { const answer = await terminal.question(`🧩 IDE Integration\n${choices}\nSelect IDE: `), selected = available[Number(answer) - 1] ?? available.find((adapter) => adapter.id === answer.trim()); if (!selected) throw new Error(`Unknown IDE selection: ${answer}`); const configuration = await readIDEConfiguration(); await writeIDEConfiguration({ ...configuration, selectedIDE: selected.id }); console.log(`Selected IDE: ${selected.name}`); } finally { terminal.close(); } return; }
+    const selection = await resolveIDESelection({ projectRoot: root, detected: detected.filter((item) => item.detection.detected).map((item) => item.adapter.id) }), selected = selection.id ? registry.get(selection.id) : undefined;
+    if (action === "capabilities") { const value = selected ? { id: selected.id, capabilities: selected.capabilities } : { id: undefined, capabilities: {} }; console.log(jsonMode ? JSON.stringify(value, null, 2) : selected ? `${selected.name}\n${Object.entries(selected.capabilities).map(([key, value]) => `  ${value ? "✓" : "○"} ${key}${value === "limited" ? " (limited)" : ""}`).join("\n")}` : "No IDE selected or detected."); return; }
+    if (action === "config") { const value = await readIDEConfiguration(); console.log(JSON.stringify(value, null, 2)); return; }
+    if (action !== "status") throw new Error(`Unknown IDE action: ${action}`);
+    const value = { current: selected ? { id: selected.id, name: selected.name, source: selection.source, capabilities: selected.capabilities } : undefined, detected: detected.filter((item) => item.detection.detected).map((item) => ({ id: item.adapter.id, name: item.adapter.name, path: item.detection.path })), available: available.map((item) => ({ id: item.id, name: item.name })) }; if (jsonMode) console.log(JSON.stringify(value, null, 2)); else console.log(`🧩 IDE Integration\nCurrent: ${selected ? `${selected.name} (${selection.source})` : "none"}\nDetected\n${value.detected.map((item) => `  ✓ ${item.name}`).join("\n") || "  none"}\nAvailable integrations\n${value.available.map((item) => `  • ${item.name}`).join("\n")}`); return;
+  }
   if (!jsonMode) console.log("Indexing repository...");
   const project = await discoverProject(root);
   await memory.initialize(project);
@@ -94,6 +111,17 @@ const main = async (): Promise<void> => {
     console.log(`✓ ${indexed.symbols.length} symbols`);
     console.log(`✓ ${indexed.relationships.length} relationships`);
     console.log(`✓ ${history.indexedCommits} new commits`);
+  }
+
+  if (requestArg === "serve") {
+    const portValue = optionValue("port"), port = portValue === undefined ? 0 : Number(portValue); if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error(`Invalid port: ${portValue}`);
+    const runtime = await startRuntimeServer({ root, memory, port }); const connection = { url: runtime.url, token: runtime.token, sessionId: runtime.sessionId, expiresAt: runtime.expiresAt, workspace: runtime.workspace };
+    console.log(jsonMode ? JSON.stringify(connection) : `easy-llm-code runtime ready\nURL: ${runtime.url}\nSession: ${runtime.sessionId}\nExpires: ${runtime.expiresAt}\nToken: ${runtime.token}`);
+    await new Promise<void>((resolve) => { runtime.server.once("close", resolve); const stop = () => runtime.server.close(); process.once("SIGINT", stop); process.once("SIGTERM", stop); }); return;
+  }
+
+  if (requestArg === "open") {
+    const registry = createIDERegistry(), detected = await registry.detect(), explicitIDE = optionValue("ide"), selection = await resolveIDESelection({ ...(explicitIDE ? { explicit: explicitIDE } : {}), projectRoot: root, detected: detected.filter((item) => item.detection.detected).map((item) => item.adapter.id) }); if (!selection.id) throw new Error("No IDE selected. Run: llm-code ide use <ide>"); const adapter = registry.get(selection.id), taskId = optionValue("task"); let requestedPath: string | undefined = positional[1]; if (taskId) { const plan = await memory.findPlanForTask(taskId), proposal = plan ? await memory.findMutationForPlan(plan.id) : undefined; requestedPath = proposal?.files[0]?.path; if (!requestedPath) throw new Error(`Task ${taskId} has no associated file`); } if (!requestedPath) throw new Error("Usage: llm-code open <file> [--ide <ide>] or llm-code open --task <task-id>"); const canonicalRoot = await realpath(root), target = await realpath(resolve(canonicalRoot, requestedPath)); if (target !== canonicalRoot && !target.startsWith(`${canonicalRoot}${sep}`)) throw new Error("IDE_OPEN_PATH_ESCAPE"); await adapter.connect(); try { await adapter.openFile({ path: target }); } finally { await adapter.disconnect(); } return;
   }
 
   const executeLifecycle = async (request: string | undefined, mode: TaskMode, resumeId?: string): Promise<void> => {
@@ -146,16 +174,27 @@ const main = async (): Promise<void> => {
   if (requestArg === "diff") {
     const result = await gitDiffTool.execute({}, { root }); console.log(result.diff || "No working-tree diff."); return;
   }
+  if (requestArg === "sandbox") {
+    const requested = positional[1] ?? "list", action = requested.startsWith("sandbox:") ? "inspect" : requested, sandboxId = requested.startsWith("sandbox:") ? requested : positional[2], manager = new SandboxManager({ memory, provider: new LocalProcessSandboxProvider() });
+    if (action === "list") { const sandboxes = await memory.listSandboxes(); if (jsonMode) console.log(JSON.stringify(sandboxes, null, 2)); else for (const sandbox of sandboxes) console.log(`${sandbox.id}  ${sandbox.status.padEnd(9)}  task ${sandbox.taskId}  ${sandbox.workspace.retained ? "retained" : "released"}`); return; }
+    if (!sandboxId) throw new Error(`Usage: llm-code sandbox ${action} SANDBOX_ID`);
+    if (action === "inspect") { const inspection = await manager.inspect(sandboxId); console.log(JSON.stringify(inspection, null, 2)); return; }
+    if (action === "diff") { console.log(await manager.diff(sandboxId) || "No sandbox diff."); return; }
+    if (action === "events") { const filter = optionValue("type"), events = (await memory.getSandboxEvents(sandboxId)).filter((event) => !filter || event.type.includes(filter)); if (jsonMode) console.log(JSON.stringify(events, null, 2)); else for (const event of events) console.log(`${event.timestamp}  ${event.type}`); return; }
+    throw new Error(`Unknown sandbox action: ${action}`);
+  }
   if (requestArg === "verify") {
-    const commands = await detectVerificationCommands(project);
-    const run = await runVerification(project, "manual-verification", "manual", commands);
+    const taskId = `manual-verification-${Date.now()}`, manager = new SandboxManager({ memory, provider: new LocalProcessSandboxProvider() }); let sandbox = await manager.create({ taskId, projectId: project.id, repositoryPath: root }); sandbox = await manager.prepare(sandbox.id, { languages: project.detectedLanguages }); sandbox = await manager.start(sandbox.id); const workspace = await manager.workspacePath(sandbox.id), verificationProject = { ...project, root: workspace };
+    const commands = await detectVerificationCommands(verificationProject);
+    const run = await runVerification(verificationProject, taskId, "manual", commands, undefined, { execute: async (command) => { const result = await manager.execute(sandbox.id, { executable: command.executable, args: command.args, timeoutMs: command.timeoutMs }); return { stepId: "", command: command.command, status: result.status === "completed" ? "passed" : result.status === "timed_out" ? "timed_out" : result.status === "blocked" ? "denied" : "failed", exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr, durationMs: result.durationMs, classification: result.failureReason }; } });
+    await manager.finalize(sandbox.id, run.passed);
     if (jsonMode) console.log(JSON.stringify(run, null, 2)); else { console.log("Verification"); for (const result of run.results) console.log(`${result.status === "passed" ? "✓" : "✗"} ${result.command}`); if (!run.results.length) console.log("No trusted verification scripts detected."); }
     if (!run.passed) process.exitCode = 1; return;
   }
   if (requestArg === "task" && positional[1]) {
-    const [task, outcome, plan, models, transactions, verifications, events, execution, decisions, assumptions, reviews, routes] = await Promise.all([memory.getTask(positional[1]), memory.getTaskOutcome(positional[1]), memory.findPlanForTask(positional[1]), memory.getModelExecutions(positional[1]), memory.getMutationTransactions(positional[1]), memory.getVerificationRuns(positional[1]), memory.getTaskEvents(positional[1]), memory.getAutonomousExecution(positional[1]), memory.getExecutionDecisions(positional[1]), memory.getAssumptionChecks(positional[1]), memory.getReviewResults(positional[1]), memory.getRoutingDecisions(positional[1])]);
-    const value = { task, outcome, plan, models, transactions, verifications, events, execution, decisions, assumptions, reviews, routes }; if (jsonMode) console.log(JSON.stringify(value, null, 2));
-    else if (!task) console.log(`Task ${positional[1]} not found.`); else { const model = models.at(-1); console.log(`Task: ${task.task.request}\nStatus: ${(outcome?.status ?? task.task.status).toUpperCase()}\nModel\n  ${model?.provider ?? "unknown"}/${model?.model ?? "unknown"}${model?.estimatedCost !== undefined ? `\n  $${model.estimatedCost.toFixed(4)}` : ""}\nPlan\n  ${plan?.steps.length ?? 0} steps\nMutation\n  ${outcome?.filesChanged ?? 0} files\n  ${outcome?.linesChanged ?? 0} changed lines\n  ${transactions.at(-1)?.status ?? "none"}\nVerification\n  ${outcome?.verificationPassed ? "✓ passed" : "not passed"}\n  ${verifications.flatMap((run) => run.results).length} command(s)\nAttempts\n  ${outcome?.attempts ?? 0}\nDuration\n  ${outcome?.durationMs ?? 0}ms`); }
+    const [task, outcome, plan, models, transactions, verifications, events, execution, decisions, assumptions, reviews, routes, sandbox] = await Promise.all([memory.getTask(positional[1]), memory.getTaskOutcome(positional[1]), memory.findPlanForTask(positional[1]), memory.getModelExecutions(positional[1]), memory.getMutationTransactions(positional[1]), memory.getVerificationRuns(positional[1]), memory.getTaskEvents(positional[1]), memory.getAutonomousExecution(positional[1]), memory.getExecutionDecisions(positional[1]), memory.getAssumptionChecks(positional[1]), memory.getReviewResults(positional[1]), memory.getRoutingDecisions(positional[1]), memory.findSandboxForTask(positional[1])]);
+    const value = { task, outcome, plan, models, transactions, verifications, events, execution, decisions, assumptions, reviews, routes, sandbox }; if (jsonMode) console.log(JSON.stringify(value, null, 2));
+    else if (!task) console.log(`Task ${positional[1]} not found.`); else { const model = models.at(-1), sandboxInspection = sandbox ? await new SandboxManager({ memory, provider: new LocalProcessSandboxProvider() }).inspect(sandbox.id) : undefined; console.log(`Task: ${task.task.request}\nStatus: ${(outcome?.status ?? task.task.status).toUpperCase()}\nModel\n  ${model?.provider ?? "unknown"}/${model?.model ?? "unknown"}${model?.estimatedCost !== undefined ? `\n  $${model.estimatedCost.toFixed(4)}` : ""}\nPlan\n  ${plan?.steps.length ?? 0} steps\nMutation\n  ${outcome?.filesChanged ?? 0} files\n  ${outcome?.linesChanged ?? 0} changed lines\n  ${transactions.at(-1)?.status ?? "none"}\nVerification\n  ${outcome?.verificationPassed ? "✓ passed" : "not passed"}\n  ${verifications.flatMap((run) => run.results).length} command(s)\nSandbox\n  ${sandbox?.id ?? "none"}\n  ${sandbox ? `${sandbox.provider} / ${sandbox.status}` : "not used"}\n  ${sandboxInspection?.commands.length ?? 0} commands, ${sandboxInspection?.filesystemChanges.length ?? 0} filesystem changes, ${sandboxInspection?.network.length ?? 0} network decisions\n  ${sandbox ? `${sandbox.resourceUsage.durationMs}ms, ${sandbox.resourceUsage.peakMemoryBytes} peak bytes` : ""}\nAttempts\n  ${outcome?.attempts ?? 0}\nDuration\n  ${outcome?.durationMs ?? 0}ms`); }
     if (!jsonMode && events.length) { console.log("Timeline:"); for (const event of events) console.log(`  ${event.timestamp.slice(11, 19)} ${event.event.type}`); }
     if (!jsonMode && args.includes("--decisions")) { console.log("Execution decisions"); for (const decision of decisions) console.log(`  ${decision.iteration}. ${decision.action.toUpperCase()} — ${decision.reason}`); }
     if (!jsonMode && args.includes("--assumptions")) { console.log("Assumptions"); for (const check of assumptions) console.log(`  ${check.assumption.id} ${check.assumption.status.toUpperCase()} — ${check.assumption.statement}`); }

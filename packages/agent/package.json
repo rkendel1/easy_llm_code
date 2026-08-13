@@ -20,6 +20,7 @@
     "code": "tsx src/cli/main.ts"
   },
   "dependencies": {
+    "@easy-llm/code-ide": "0.1.0",
     "@easy-llm/llm": "0.1.7",
     "@feltdb/core": "0.2.0"
   },

@@ -83,7 +83,17 @@ export type ProjectRelation =
   | "APPLIED_MUTATION"
   | "RAN_VERIFICATION"
   | "RAN_REVIEW"
-  | "REPLANNED";
+  | "REPLANNED"
+  | "EXECUTED_IN"
+  | "HAS_ENVIRONMENT"
+  | "HAS_POLICY"
+  | "HAS_SNAPSHOT"
+  | "OBSERVED_PROCESS"
+  | "OBSERVED_FILE_CHANGE"
+  | "OBSERVED_NETWORK_EVENT"
+  | "RUN_IN_IDE"
+  | "ASSOCIATED_WORKSPACE"
+  | "PRODUCED_RUNTIME_EVENTS";
 
 
 export interface ProjectEdge {

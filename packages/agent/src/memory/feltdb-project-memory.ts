@@ -15,6 +15,7 @@ import type { SuccessfulPattern } from "./successful-patterns.js";
 import type { FailurePattern } from "./failure-patterns.js";
 import type { ActualChange, ChangePattern, ImpactPrediction, PredictionOutcome } from "../change-intelligence/types.js";
 import type { AssumptionCheck, AutonomousExecution, ExecutionDecision, ExecutionPattern, ReviewResult } from "../autonomy/types.js";
+import type { EnvironmentFingerprint, ExecutionResult, FilesystemChange, NetworkObservation, ProcessObservation, ResourceUsage, Sandbox, SandboxEvent, SandboxSnapshot } from "../sandbox/core/sandbox-types.js";
 
 interface StoredObservation extends Observation { id: string; projectId: string }
 interface StoredChange extends FileChangeRecord { projectId: string }
@@ -80,6 +81,15 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
   const assumptionChecks = db.collection<AssumptionCheck & { projectId: string }>("assumption_checks");
   const reviewResults = db.collection<ReviewResult & { projectId: string }>("review_results");
   const executionPatterns = db.collection<ExecutionPattern & { projectId: string }>("execution_patterns");
+  const sandboxes = db.collection<Sandbox & { projectId: string }>("sandboxes");
+  const sandboxFingerprints = db.collection<EnvironmentFingerprint & { id: string; sandboxId: string; projectId: string }>("sandbox_fingerprints");
+  const sandboxCommands = db.collection<ExecutionResult & { projectId: string }>("sandbox_commands");
+  const processObservations = db.collection<ProcessObservation & { projectId: string }>("process_observations");
+  const filesystemChanges = db.collection<FilesystemChange & { projectId: string }>("filesystem_changes");
+  const networkObservations = db.collection<NetworkObservation & { projectId: string }>("network_observations");
+  const sandboxResources = db.collection<ResourceUsage & { id: string; sandboxId: string; projectId: string }>("sandbox_resources");
+  const sandboxSnapshots = db.collection<SandboxSnapshot & { projectId: string }>("sandbox_snapshots");
+  const sandboxEvents = db.collection<SandboxEvent & { projectId: string }>("sandbox_events");
   let currentProjectId: string | undefined;
   const listeners = new Set<(event: ProjectChangeEvent) => void>();
 
@@ -302,6 +312,25 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
     async getReviewResults(taskId) { return (await reviewResults.find({ taskId, projectId: projectId() })).sort((a, b) => a.iteration - b.iteration); },
     async persistExecutionPattern(pattern) { await upsert(executionPatterns, { ...pattern, projectId: projectId() }); emit("execution_pattern", [pattern.id]); },
     async listExecutionPatterns() { return (await executionPatterns.find({ projectId: projectId() })).sort((a, b) => b.timestamp.localeCompare(a.timestamp)); },
+    async persistSandbox(sandbox) { const id = projectId(); await upsert(sandboxes, { ...sandbox, projectId: id }); await upsert(edges, { id: `edge:task-sandbox:${sandbox.taskId}:${sandbox.id}`, projectId: id, from: `task:${sandbox.taskId}`, to: sandbox.id, relation: "EXECUTED_IN", confidence: 1, source: "agent" }); await upsert(edges, { id: `edge:sandbox-policy:${sandbox.id}`, projectId: id, from: sandbox.id, to: `sandbox-policy:${sandbox.id}`, relation: "HAS_POLICY", confidence: 1, source: "agent" }); emit("sandbox", [sandbox.id]); },
+    async getSandbox(sandboxId) { return (await sandboxes.find({ id: sandboxId, projectId: projectId() }))[0]; },
+    async findSandboxForTask(taskId) { return (await sandboxes.find({ taskId, projectId: projectId() })).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]; },
+    async listSandboxes() { return (await sandboxes.find({ projectId: projectId() })).sort((a, b) => b.createdAt.localeCompare(a.createdAt)); },
+    async persistSandboxFingerprint(sandboxId, fingerprint) { const id = projectId(); await upsert(sandboxFingerprints, { ...fingerprint, id: `fingerprint:${sandboxId}`, sandboxId, projectId: id }); await upsert(edges, { id: `edge:sandbox-environment:${sandboxId}`, projectId: id, from: sandboxId, to: `fingerprint:${sandboxId}`, relation: "HAS_ENVIRONMENT", confidence: 1, source: "agent" }); emit("sandbox_fingerprint", [sandboxId]); },
+    async persistSandboxCommand(result) { const id = projectId(); await upsert(sandboxCommands, { ...result, stdout: result.stdout.slice(0, 4_000), stderr: result.stderr.slice(0, 4_000), projectId: id }); await upsert(edges, { id: `edge:sandbox-command:${result.sandboxId}:${result.id}`, projectId: id, from: result.sandboxId, to: result.id, relation: "HAS_EXECUTION", confidence: 1, source: "agent" }); emit("sandbox_command", [result.id]); },
+    async getSandboxCommands(sandboxId) { return (await sandboxCommands.find({ sandboxId, projectId: projectId() })).sort((a, b) => a.id.localeCompare(b.id)); },
+    async persistProcessObservation(observation) { const id = projectId(); await upsert(processObservations, { ...observation, projectId: id }); await upsert(edges, { id: `edge:sandbox-process:${observation.sandboxId}:${observation.id}`, projectId: id, from: observation.sandboxId, to: observation.id, relation: "OBSERVED_PROCESS", confidence: 1, source: "agent" }); },
+    async getProcessObservations(sandboxId) { return processObservations.find({ sandboxId, projectId: projectId() }); },
+    async persistFilesystemChange(change) { const id = projectId(); await upsert(filesystemChanges, { ...change, projectId: id }); await upsert(edges, { id: `edge:sandbox-file-change:${change.sandboxId}:${change.id}`, projectId: id, from: change.sandboxId, to: change.id, relation: "OBSERVED_FILE_CHANGE", confidence: 1, source: "agent" }); },
+    async getFilesystemChanges(sandboxId) { return filesystemChanges.find({ sandboxId, projectId: projectId() }); },
+    async persistNetworkObservation(observation) { const id = projectId(); await upsert(networkObservations, { ...observation, projectId: id }); await upsert(edges, { id: `edge:sandbox-network:${observation.sandboxId}:${observation.id}`, projectId: id, from: observation.sandboxId, to: observation.id, relation: "OBSERVED_NETWORK_EVENT", confidence: 1, source: "agent" }); },
+    async getNetworkObservations(sandboxId) { return networkObservations.find({ sandboxId, projectId: projectId() }); },
+    async persistSandboxResourceUsage(sandboxId, usage) { const id = projectId(), resourceId = `resource:${sandboxId}`; await upsert(sandboxResources, { ...usage, id: resourceId, sandboxId, projectId: id }); await upsert(edges, { id: `edge:sandbox-resource:${sandboxId}`, projectId: id, from: sandboxId, to: resourceId, relation: "RESULTED_IN", confidence: 1, source: "agent" }); },
+    async persistSandboxSnapshot(snapshot) { const id = projectId(); await upsert(sandboxSnapshots, { ...snapshot, projectId: id }); await upsert(edges, { id: `edge:sandbox-snapshot:${snapshot.sandboxId}:${snapshot.id}`, projectId: id, from: snapshot.sandboxId, to: snapshot.id, relation: "HAS_SNAPSHOT", confidence: 1, source: "agent" }); emit("sandbox_snapshot", [snapshot.id]); },
+    async getSandboxSnapshot(snapshotId) { return (await sandboxSnapshots.find({ id: snapshotId, projectId: projectId() }))[0]; },
+    async getSandboxSnapshots(sandboxId) { return (await sandboxSnapshots.find({ sandboxId, projectId: projectId() })).sort((a, b) => a.createdAt.localeCompare(b.createdAt)); },
+    async persistSandboxEvent(event) { await upsert(sandboxEvents, { ...event, payload: JSON.parse(JSON.stringify(event.payload, (_key, value) => typeof value === "string" ? value.slice(0, 4_000) : value)), projectId: projectId() }); },
+    async getSandboxEvents(sandboxId) { return (await sandboxEvents.find({ sandboxId, projectId: projectId() })).sort((a, b) => a.sequence - b.sequence); },
     subscribeToProjectChanges(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     async queryContext(query: ContextQuery): Promise<ContextBundle> {
       const [projectFiles, projectSymbols, projectEdges, projectCommits, projectChanges, projectObservations, pairs] = await all();

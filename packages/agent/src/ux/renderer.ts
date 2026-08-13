@@ -1,6 +1,7 @@
-import type { AgentEvent } from "../task/events.js";
+import type { RuntimeEvent } from "../task/events.js";
 
-export const renderAgentEvent = (event: AgentEvent): string => {
+export const renderAgentEvent = (event: RuntimeEvent): string => {
+  if ("payload" in event && "sequence" in event) return `  sandbox ${event.type}${event.payload.status ? `: ${String(event.payload.status)}` : ""}`;
   switch (event.type) {
     case "task.started": return `┌─ easy-llm-code ──\nTask ${event.taskId}`;
     case "context.started": return "▸ Understanding repository";
@@ -34,6 +35,7 @@ export const renderAgentEvent = (event: AgentEvent): string => {
     case "verification.completed": return `  ${event.success ? "✓" : "✗"} Verification ${event.success ? "passed" : "failed"}`;
     case "repair.started": return `▸ Repair attempt ${event.attempt}`;
     case "task.paused": return `Task paused safely.\nResume with: llm-code resume ${event.taskId}`;
+    case "task.cancelled": return "Task cancelled safely.\n└────────────────────";
     case "task.completed": return "✓ Task complete\n└────────────────────";
     case "task.failed": return `✗ Task failed: ${event.reason}\n└────────────────────`;
   }

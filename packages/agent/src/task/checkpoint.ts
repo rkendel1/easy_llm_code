@@ -16,4 +16,6 @@ export interface TaskCheckpoint {
   autonomyMode?: AutonomyMode;
   budgetUsage?: BudgetUsage;
   riskAssessment?: RiskAssessment;
+  sandboxId?: string;
+  sandboxSnapshotId?: string;
 }

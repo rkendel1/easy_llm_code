@@ -20,12 +20,16 @@ const execute = (command: { executable: string; args: string[]; command: string 
     if (status !== "passed") result.classification = exceeded ? "output_limit" : classifyVerificationFailure(result); resolve(result); });
 });
 
-export const runVerification = async (project: Project, taskId: string, proposalId: string, requested: VerificationStep[], policy: ExecutionPolicy = DEFAULT_EXECUTION_POLICY): Promise<VerificationRun> => {
+export interface VerificationCommandExecutor {
+  execute(command: { executable: string; args: string[]; command: string; timeoutMs: number }): Promise<VerificationResult>;
+}
+
+export const runVerification = async (project: Project, taskId: string, proposalId: string, requested: VerificationStep[], policy: ExecutionPolicy = DEFAULT_EXECUTION_POLICY, executor?: VerificationCommandExecutor): Promise<VerificationRun> => {
   const startedAt = new Date().toISOString(), trusted = await detectVerificationCommands(project), results: VerificationResult[] = [];
   for (const step of requested) {
     const command = authorizeVerification(step, trusted);
     if (!command) { results.push({ stepId: step.id, command: step.command, status: "denied", stdout: "", stderr: "Command is not a detected trusted package script", durationMs: 0, classification: "untrusted_command" }); continue; }
-    const result = await execute(command, project.root, policy, step.timeoutMs); result.stepId = step.id; results.push(result);
+    const result = executor ? await executor.execute({ ...command, timeoutMs: step.timeoutMs }) : await execute(command, project.root, policy, step.timeoutMs); result.stepId = step.id; results.push(result);
   }
   const passed = requested.length > 0 && results.every((result, index) => result.status === "passed" || !requested[index]?.required);
   return { id: `verification:${randomUUID()}`, taskId, proposalId, results, passed, startedAt, completedAt: new Date().toISOString() };

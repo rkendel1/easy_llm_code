@@ -1,5 +1,6 @@
 import type { ContextMetrics } from "../context/types.js";
 import type { ExecutionDecision, ReviewResult, RiskAssessment } from "../autonomy/types.js";
+import type { SandboxEvent } from "../sandbox/core/sandbox-types.js";
 
 export type AgentEvent =
   | { type: "task.started"; taskId: string }
@@ -27,14 +28,16 @@ export type AgentEvent =
   | { type: "execution.completed"; executionId: string }
   | { type: "planning.started" }
   | { type: "plan.created"; planId: string }
-  | { type: "approval.required" }
+  | { type: "approval.required"; mutationId?: string; files?: string[]; verificationPlan?: string[]; sandboxId?: string; risk?: RiskAssessment; impact?: unknown }
   | { type: "mutation.started" }
   | { type: "mutation.completed"; files: string[] }
   | { type: "verification.started"; command: string }
   | { type: "verification.completed"; success: boolean }
   | { type: "repair.started"; attempt: number }
   | { type: "task.paused"; taskId: string }
+  | { type: "task.cancelled"; taskId: string }
   | { type: "task.completed"; taskId: string }
   | { type: "task.failed"; taskId: string; reason: string };
 
 export interface PersistedAgentEvent { id: string; taskId: string; sequence: number; timestamp: string; event: AgentEvent }
+export type RuntimeEvent = AgentEvent | SandboxEvent;

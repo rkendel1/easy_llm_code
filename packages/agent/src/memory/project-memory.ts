@@ -29,6 +29,7 @@ import type { SuccessfulPattern } from "./successful-patterns.js";
 import type { FailurePattern } from "./failure-patterns.js";
 import type { ActualChange, ChangePattern, ImpactPrediction, PredictionOutcome } from "../change-intelligence/types.js";
 import type { AssumptionCheck, AutonomousExecution, ExecutionDecision, ExecutionPattern, ReviewResult } from "../autonomy/types.js";
+import type { EnvironmentFingerprint, ExecutionResult, FilesystemChange, NetworkObservation, ProcessObservation, ResourceUsage, Sandbox, SandboxEvent, SandboxSnapshot } from "../sandbox/core/sandbox-types.js";
 
 export interface ProjectMemory {
   initialize(project: Project): Promise<void>;
@@ -110,6 +111,25 @@ export interface ProjectMemory {
   getReviewResults(taskId: string): Promise<ReviewResult[]>;
   persistExecutionPattern(pattern: ExecutionPattern): Promise<void>;
   listExecutionPatterns(): Promise<ExecutionPattern[]>;
+  persistSandbox(sandbox: Sandbox): Promise<void>;
+  getSandbox(sandboxId: string): Promise<Sandbox | undefined>;
+  findSandboxForTask(taskId: string): Promise<Sandbox | undefined>;
+  listSandboxes(): Promise<Sandbox[]>;
+  persistSandboxFingerprint(sandboxId: string, fingerprint: EnvironmentFingerprint): Promise<void>;
+  persistSandboxCommand(result: ExecutionResult): Promise<void>;
+  getSandboxCommands(sandboxId: string): Promise<ExecutionResult[]>;
+  persistProcessObservation(observation: ProcessObservation): Promise<void>;
+  getProcessObservations(sandboxId: string): Promise<ProcessObservation[]>;
+  persistFilesystemChange(change: FilesystemChange): Promise<void>;
+  getFilesystemChanges(sandboxId: string): Promise<FilesystemChange[]>;
+  persistNetworkObservation(observation: NetworkObservation): Promise<void>;
+  getNetworkObservations(sandboxId: string): Promise<NetworkObservation[]>;
+  persistSandboxResourceUsage(sandboxId: string, usage: ResourceUsage): Promise<void>;
+  persistSandboxSnapshot(snapshot: SandboxSnapshot): Promise<void>;
+  getSandboxSnapshot(snapshotId: string): Promise<SandboxSnapshot | undefined>;
+  getSandboxSnapshots(sandboxId: string): Promise<SandboxSnapshot[]>;
+  persistSandboxEvent(event: SandboxEvent): Promise<void>;
+  getSandboxEvents(sandboxId: string): Promise<SandboxEvent[]>;
   subscribeToProjectChanges(listener: (event: ProjectChangeEvent) => void): () => void;
   queryContext(query: ContextQuery): Promise<ContextBundle>;
 }
