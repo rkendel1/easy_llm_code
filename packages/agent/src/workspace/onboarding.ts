@@ -21,7 +21,7 @@ export const onboardProject = async (input: { project: Project; memory: ProjectM
     { id: "memory", label: "Local memory initialized", status: "ready" },
     { id: "index", label: "Repository indexed", status: "ready", detail: reconciliation.changed ? `${reconciliation.indexed?.files.length ?? 0} files reconciled` : `${statistics.nodes.files ?? 0} files already current` },
     { id: "history", label: "Git history connected", status: "ready", detail: `${history.indexedCommits} new commits` },
-    { id: "routing", label: "Model routing ready", status: model.ready ? "ready" : "attention", detail: model.ready ? "Automatic" : "Continue without AI" },
+    { id: "routing", label: "Model routing ready", status: model.ready ? "ready" : "attention", detail: model.ready ? model.credentialSources.map((item) => item.provider).join(", ") : "Run easy-llm-code setup" },
     { id: "sandbox", label: "Sandbox ready", status: config.execution.sandbox ? "ready" : "attention" },
     { id: "ide", label: selectedIDE ? "IDE connected" : "Terminal ready", status: "ready", detail: selectedIDE ?? "terminal" }
   ] };

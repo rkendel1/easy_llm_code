@@ -46,6 +46,7 @@ describe("PR13 coding workspace and onboarding certification", () => {
 
   it("infers one primary Run action as question or autonomous change", () => {
     expect(inferWorkspaceTaskMode("Why does user creation return null?")).toBe("ask");
+    expect(inferWorkspaceTaskMode("whats the status of the code")).toBe("ask");
     expect(inferWorkspaceTaskMode("Fix the failing authentication tests")).toBe("auto");
     expect(inferWorkspaceTaskMode("Add pagination to users")).toBe("auto");
   });

@@ -14,7 +14,7 @@ Project memory
 Model
   ● Automatic
 AI Access
-${result.model.credentialSources.length ? result.model.credentialSources.map((item) => `  ✓ ${item.provider} credentials available`).join("\n") : result.model.vaultConfigured ? "  ○ Encrypted vault configured; unlock it through @easy-llm/llm" : "  ○ No cloud credentials configured; continuing without AI"}
+${result.model.credentialSources.length ? result.model.credentialSources.map((item) => `  ✓ ${item.provider} credentials available (${item.source})`).join("\n") : result.model.vaultConfigured ? "  ○ Encrypted vault is locked — run: easy-llm-code setup" : "  ○ Provider setup required — run: easy-llm-code setup"}
 Coding environment
 ${result.detectedIDEs.filter((item) => item.detected).map((item) => `  ${item.id === result.selectedIDE ? "●" : "○"} ${item.name}`).join("\n") || "  Terminal (connect an IDE later)"}
 
@@ -25,7 +25,7 @@ You're ready.` : `Welcome back to ${result.project}.`;
 export const renderWorkspaceStatus = (status: WorkspaceStatus): string => `${status.state === "ready" ? "● Ready" : "⚠ Attention required"}
 Project  ${status.project.name} ${status.project.indexed ? "✓ indexed" : "○ indexing needed"}
 Memory   ${status.memory.capabilities.persistent ? "✓" : "⚠"} ${status.memory.provider}
-AI       ${status.ai.ready ? "✓ Automatic routing" : "○ Continue without AI"}
+AI       ${status.ai.ready ? `✓ ${status.ai.credentialSources.map((item) => `${item.provider} (${item.source})`).join(", ")}` : `○ Setup required — run: easy-llm-code setup`}
 Sandbox  ${status.sandbox.enabled ? `✓ ${status.sandbox.network} network` : "○ disabled"}
 IDE      ${status.ide.selected ? `✓ ${status.ide.selected}` : "○ terminal"}`;
 

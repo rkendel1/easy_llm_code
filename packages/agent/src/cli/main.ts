@@ -4,6 +4,7 @@ import { createInterface } from "node:readline/promises";
 import { resolve, sep } from "node:path";
 import { readFile, realpath } from "node:fs/promises";
 import { createCodeAgent } from "../agent/create-agent.js";
+import { initializeModelCX, refreshModelCX } from "../model/llm-cx.js";
 import { discoverProject } from "../discovery/discover-project.js";
 import { indexProjectIntoMemory } from "../indexing/index-project.js";
 import { createFeltDBProjectMemory } from "../memory/feltdb-project-memory.js";
@@ -34,6 +35,7 @@ import { readProjectConfig, resetProjectConfig, updateProjectSetting } from "../
 import { applyAutomaticUpdate, applyNativeUpdate, checkForUpdate, diagnoseInstallation, PRODUCT_NAME, PRODUCT_VERSION, renderDoctor, rollbackNativeUpdate } from "../installation/index.js";
 import { installIDEIntegration, parseSetupDeepLink } from "../ide/setup.js";
 import type { TaskRunResult } from "../task/runner.js";
+import { CLI as ModelCLI } from "@easy-llm/llm/cli";
 
 const args = process.argv.slice(2);
 const rootArg = args.find((arg) => arg.startsWith("--root="));
@@ -94,6 +96,7 @@ const printMemory = async (memory: ReturnType<typeof createFeltDBProjectMemory>)
 
 const main = async (): Promise<void> => {
   if (args.includes("--version") || args.includes("-V")) { console.log(`${PRODUCT_NAME} ${PRODUCT_VERSION}`); return; }
+  if (requestArg === "setup") { const code = await new ModelCLI().execute(["setup"]); if (code) process.exitCode = code; return; }
   if (requestArg === "update" || args.includes("--update")) { if (positional[1] === "rollback") { await rollbackNativeUpdate(); console.log("Restored the previous easy-llm-code runtime."); return; } if (positional[1] === "check") { const result = await checkForUpdate(); console.log(result.status === "current" ? `easy-llm-code ${result.currentVersion} is current.` : `easy-llm-code ${result.latestVersion} is available.`); return; } const result = await applyNativeUpdate({}); console.log(result.status === "updated" ? `easy-llm-code updated\n${result.currentVersion} → ${result.latestVersion}` : result.message ?? (result.status === "current" ? `easy-llm-code ${result.currentVersion} is current.` : `Update ${result.latestVersion} is available.`)); return; }
   if (requestArg?.startsWith("easy-llm-code://")) { const link = parseSetupDeepLink(requestArg); if (link.project) root = resolve(link.project); if (link.ide) { const configuration = await readIDEConfiguration(); await writeIDEConfiguration({ ...configuration, selectedIDE: link.ide }); } requestArg = undefined; }
   if (requestArg === "ide") {
@@ -153,6 +156,8 @@ const main = async (): Promise<void> => {
   }
 
   const executeLifecycle = async (request: string | undefined, mode: TaskMode, resumeId?: string, workspaceUX = false): Promise<TaskRunResult> => {
+    const modelStatus = await initializeModelCX();
+    if (!mockMode && !modelStatus.ready) throw new Error("AI_PROVIDER_SETUP_REQUIRED: run easy-llm-code setup, then retry your request.");
     const terminalApproval = createTerminalApproval(), workspaceConfig = await readProjectConfig(project.id), configuredAutonomy = args.includes("--safe") || args.includes("--aggressive") ? autonomyMode : workspaceConfig.execution.riskPolicy;
     const runner = createTaskRunner({
       root, memory, policy: { maxRepairAttempts: workspaceConfig.verification.repairAttempts }, verification: { enabled: workspaceConfig.verification.enabled }, sandbox: { enabled: workspaceConfig.execution.sandbox, policy: { network: { mode: workspaceConfig.execution.networkPolicy, hosts: [] } } },
@@ -294,8 +299,17 @@ const main = async (): Promise<void> => {
 
   let request = requestArg;
   if (!request) {
-    const rl = createInterface({ input, output }); let workspaceRuntime: Awaited<ReturnType<typeof startRuntimeServer>> | undefined;
+    let rl = createInterface({ input, output }); let workspaceRuntime: Awaited<ReturnType<typeof startRuntimeServer>> | undefined;
     try {
+      if (input.isTTY && output.isTTY && !(await initializeModelCX()).ready) {
+        const answer = (await rl.question("\nAI provider setup is required before easy-llm-code can run tasks.\nStart secure setup now? [Y/n] ")).trim();
+        if (!/^n(?:o)?$/i.test(answer)) {
+          rl.close();
+          const modelCLI = new ModelCLI(), setupCode = await modelCLI.execute(["setup"]);
+          if (setupCode === 0) { refreshModelCX(); await modelCLI.execute(["doctor"]); }
+          rl = createInterface({ input, output });
+        }
+      }
       const onboarding = await onboardProject({ project, memory, ...(input.isTTY && output.isTTY ? { selectIDE: async (choices: Array<{ id: string; name: string }>) => { console.log(`Coding Environment\nWe found:\n${choices.map((choice, index) => `  ${index + 1}. ${choice.name}`).join("\n")}\n  ${choices.length + 1}. Terminal`); const answer = await rl.question("Where would you like to use easy-llm-code? "); const index = Number(answer) - 1; return index === choices.length ? undefined : choices[index]?.id; } } : {}) });
       if (input.isTTY && output.isTTY) workspaceRuntime = await startRuntimeServer({ root, memory });
       const config = await readProjectConfig(project.id), status = await getWorkspaceStatus(project, config, memory); console.log(renderWelcome(onboarding)); console.log(renderWorkspaceStatus(status)); console.log(renderContinuation(status));
