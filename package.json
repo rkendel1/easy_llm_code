@@ -7,8 +7,8 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w @easy-llm/code-ide && npm run build -w @easy-llm/code-agent",
-    "test": "npm run test -w @easy-llm/code-agent",
+    "build": "npm run build -w @easy-llm/code-ide && npm run build -w @easy-llm/code-agent && npm run build -w @easy-llm/code-website",
+    "test": "npm run test -w @easy-llm/code-agent && npm run test -w @easy-llm/code-website",
     "code": "npm run code -w @easy-llm/code-agent --",
     "build:native": "sh distribution/build-native.sh"
   }

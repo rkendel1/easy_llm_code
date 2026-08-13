@@ -13,13 +13,13 @@ The first launch detects the repository, Git history, available AI providers, lo
 macOS and Linux:
 
 ```sh
-curl -fsSL https://easy-llm.dev/install.sh | sh
+curl -fsSL https://easy-llm-code.vercel.app/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://easy-llm.dev/install.ps1 | iex
+irm https://easy-llm-code.vercel.app/install.ps1 | iex
 ```
 
 Other installation methods:

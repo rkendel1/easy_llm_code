@@ -1,14 +1,15 @@
 $ErrorActionPreference = "Stop"
-$BaseUrl = if ($env:EASY_LLM_CODE_RELEASE_URL) { $env:EASY_LLM_CODE_RELEASE_URL } else { "https://easy-llm.dev/releases" }
+$RepositoryUrl = if ($env:EASY_LLM_CODE_RELEASE_URL) { $env:EASY_LLM_CODE_RELEASE_URL } else { "https://github.com/rkendel1/easy_llm_code" }
 $Version = if ($env:EASY_LLM_CODE_VERSION) { $env:EASY_LLM_CODE_VERSION } else { "latest" }
 $InstallDir = if ($env:EASY_LLM_CODE_INSTALL_DIR) { $env:EASY_LLM_CODE_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "easy-llm-code\bin" }
 if ($env:PROCESSOR_ARCHITECTURE -notin @("AMD64", "x86_64")) { throw "Windows x64 is currently required." }
 $Artifact = "easy-llm-code-win32-x64.exe"
+$ReleaseUrl = if ($Version -eq "latest") { "$RepositoryUrl/releases/latest/download" } else { $Tag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }; "$RepositoryUrl/releases/download/$Tag" }
 $Temporary = Join-Path ([System.IO.Path]::GetTempPath()) ("easy-llm-code-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $Temporary | Out-Null
 try {
-  Invoke-WebRequest "$BaseUrl/$Version/$Artifact" -OutFile (Join-Path $Temporary "easy-llm-code.exe")
-  Invoke-WebRequest "$BaseUrl/$Version/$Artifact.sha256" -OutFile (Join-Path $Temporary "easy-llm-code.sha256")
+  Invoke-WebRequest "$ReleaseUrl/$Artifact" -OutFile (Join-Path $Temporary "easy-llm-code.exe")
+  Invoke-WebRequest "$ReleaseUrl/$Artifact.sha256" -OutFile (Join-Path $Temporary "easy-llm-code.sha256")
   $Expected = ((Get-Content (Join-Path $Temporary "easy-llm-code.sha256")) -split "\s+")[0].ToLower()
   $Actual = (Get-FileHash (Join-Path $Temporary "easy-llm-code.exe") -Algorithm SHA256).Hash.ToLower()
   if ($Expected -ne $Actual) { throw "Integrity verification failed." }

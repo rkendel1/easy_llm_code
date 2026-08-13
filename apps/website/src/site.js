@@ -1,0 +1,8 @@
+const installerOrigin=location.origin;
+const commands={mac:`curl -fsSL ${installerOrigin}/install.sh | sh`,linux:`curl -fsSL ${installerOrigin}/install.sh | sh`,windows:`irm ${installerOrigin}/install.ps1 | iex`};
+const labels={mac:"macOS",linux:"Linux",windows:"Windows"};
+const selectPlatform=(platform,detected=false)=>{document.querySelectorAll("[data-platform-tab]").forEach(button=>button.setAttribute("aria-selected",String(button.dataset.platformTab===platform)));const command=document.querySelector("[data-install-command]"),heading=document.querySelector("[data-platform-heading]"),notice=document.querySelector("[data-detected]");if(command)command.textContent=commands[platform];if(heading)heading.textContent=`Install for ${labels[platform]}`;if(notice)notice.textContent=detected?`${labels[platform]} detected`: `${labels[platform]} selected`};
+document.querySelectorAll("[data-platform-tab]").forEach(button=>button.addEventListener("click",()=>selectPlatform(button.dataset.platformTab)));
+if(document.querySelector("[data-platform-tab]")){const source=`${navigator.userAgent} ${navigator.platform}`.toLowerCase(),platform=source.includes("win")?"windows":source.includes("linux")?"linux":"mac";selectPlatform(platform,true)}
+document.querySelectorAll("[data-copy]").forEach(button=>button.addEventListener("click",async()=>{const value=button.closest(".command")?.querySelector("code")?.textContent;if(!value)return;await navigator.clipboard.writeText(value);const prior=button.textContent;button.textContent="Copied";setTimeout(()=>button.textContent=prior,1400)}));
+document.querySelectorAll("[data-year]").forEach(node=>node.textContent=String(new Date().getFullYear()));

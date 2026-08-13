@@ -1,0 +1,12 @@
+{
+  "name": "@easy-llm/code-website",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:vercel": "node scripts/build.mjs && node scripts/prepare-vercel.mjs",
+    "dev": "node scripts/serve.mjs",
+    "test": "node scripts/build.mjs && node scripts/prepare-vercel.mjs && node --test test/website.test.mjs"
+  }
+}

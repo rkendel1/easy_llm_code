@@ -50,7 +50,9 @@ jobs:
       - name: Generate checksums, updater manifest, and Homebrew cask
         env:
           RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
-        run: node distribution/generate-release-metadata.mjs release "$RELEASE_VERSION"
+        run: |
+          case "$RELEASE_VERSION" in v*) RELEASE_TAG="$RELEASE_VERSION" ;; *) RELEASE_TAG="v$RELEASE_VERSION" ;; esac
+          node distribution/generate-release-metadata.mjs release "$RELEASE_TAG" "https://github.com/${{ github.repository }}/releases/download/$RELEASE_TAG"
       - run: cp distribution/install.sh distribution/install.ps1 distribution/uninstall.sh distribution/uninstall.ps1 release/
       - name: Publish release atomically after all targets pass
         env:
