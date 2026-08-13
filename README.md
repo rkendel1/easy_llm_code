@@ -19,6 +19,30 @@ llm-code doctor
 
 `ProjectMemory.getCapabilities()` lets callers discover whether memory is persistent while keeping context and agent behavior independent of the configured storage mode.
 
+## Task runtime
+
+The CLI exposes the same resumable task runtime used by the programmatic API:
+
+```sh
+llm-code ask "Explain authentication"
+llm-code plan "Refactor authentication"
+llm-code edit "Fix authentication"
+llm-code auto "Fix authentication"
+llm-code resume <task-id>
+llm-code task <task-id>
+llm-code tasks
+```
+
+`edit` pauses for approval; `auto` and `--yes` continue automatically while retaining mutation, verification, path, conflict, and repair limits. Ctrl+C requests a safe checkpoint and prints the resume command.
+
+Machine consumers can use newline-delimited lifecycle events:
+
+```sh
+llm-code --json auto "Fix authentication"
+```
+
+Programmatic consumers use `createTaskRunner({ root, memory, ... })`, call `run()` or `resume()`, and subscribe to the same event protocol rendered by the CLI.
+
 PR1 delivers a first vertical slice for `@easy-llm/code-agent`:
 
 repository → discovery → FeltDB project graph → context retrieval → `@easy-llm/llm` → structured response → observation persisted.

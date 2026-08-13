@@ -21,6 +21,8 @@ import type { CommitRecord, FileChangeRecord, HistoryCursor } from "../history/h
 import type { AgentPlan, Evidence, ModelExecution, ToolRun } from "../planning/types.js";
 import type { MutationProposal, MutationTransaction, RepairAttempt, TaskOutcome } from "../mutation/types.js";
 import type { VerificationRun } from "../verification/types.js";
+import type { TaskCheckpoint } from "../task/checkpoint.js";
+import type { PersistedAgentEvent } from "../task/events.js";
 
 export interface ProjectMemory {
   initialize(project: Project): Promise<void>;
@@ -31,6 +33,11 @@ export interface ProjectMemory {
   recordObservation(observation: Observation): Promise<void>;
   upsertTask(task: AgentTask): Promise<void>;
   getTask(taskId: string): Promise<{ task: AgentTask; observations: Observation[] } | undefined>;
+  listTasks(limit?: number): Promise<AgentTask[]>;
+  persistTaskCheckpoint(checkpoint: TaskCheckpoint): Promise<void>;
+  getTaskCheckpoint(taskId: string): Promise<TaskCheckpoint | undefined>;
+  recordTaskEvent(event: PersistedAgentEvent): Promise<void>;
+  getTaskEvents(taskId: string): Promise<PersistedAgentEvent[]>;
   ingestCommit(commit: CommitRecord, changes: FileChangeRecord[]): Promise<void>;
   getHistoryCursor(): Promise<HistoryCursor | undefined>;
   setHistoryCursor(cursor: HistoryCursor): Promise<void>;

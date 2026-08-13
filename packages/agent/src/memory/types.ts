@@ -108,7 +108,7 @@ export interface Observation {
 export interface AgentTask {
   id: string;
   request: string;
-  status: "created" | "analyzing" | "planning" | "planned" | "executing" | "completed" | "failed" | "cancelled";
+  status: "created" | "analyzing" | "contextualizing" | "planning" | "planned" | "awaiting_approval" | "executing" | "mutating" | "verifying" | "repairing" | "paused" | "completed" | "failed" | "cancelled";
   createdAt: string;
   completedAt?: string;
 }

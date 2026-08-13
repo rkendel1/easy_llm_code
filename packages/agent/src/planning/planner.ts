@@ -13,6 +13,7 @@ import { validatePlan } from "./validate-plan.js";
 
 export type PlannerLlm = (input: { request: string; prompt: string; context: IntelligentContextBundle }) => Promise<unknown>;
 interface PlannerOptions { root: string; memory: ProjectMemory; contextEngine: ReturnType<typeof createContextEngine>; llm?: PlannerLlm; registry?: ToolRegistry; policy?: ToolPolicy }
+export interface PlannerRunOptions { taskId?: string; context?: IntelligentContextBundle; createdAt?: string; executeReadSteps?: boolean }
 
 const textOutput = (response: unknown): string | undefined => { const value = response as { text?: string; output_text?: string; content?: string; message?: { content?: string } }; return value.text ?? value.output_text ?? value.content ?? value.message?.content; };
 const parsePlan = (value: unknown): AgentPlan => {
@@ -27,10 +28,10 @@ const contextEvidence = (taskId: string, item: ContextItem): Evidence => ({
 const defaultPlannerLlm: PlannerLlm = async ({ prompt }) => routedLlm({ task: "planning", capability: "reasoning", messages: [{ role: "user", content: prompt }] } as never);
 
 export const createTaskPlanner = (options: PlannerOptions) => ({
-  async plan(request: string): Promise<PlanningResult> {
-    const taskId = randomUUID(), createdAt = new Date().toISOString();
+  async plan(request: string, runOptions: PlannerRunOptions = {}): Promise<PlanningResult> {
+    const taskId = runOptions.taskId ?? randomUUID(), createdAt = runOptions.createdAt ?? new Date().toISOString();
     await options.memory.upsertTask({ id: taskId, request, status: "planning", createdAt });
-    const context = await options.contextEngine.build({ request });
+    const context = runOptions.context ?? await options.contextEngine.build({ request });
     const contextObservationId = `context-selection:${taskId}`;
     await options.memory.recordObservation({ id: contextObservationId, type: "decision", taskId, content: { request, selected: context.items.map((item) => ({ id: item.id, score: item.score, reason: item.reason })), excludedCount: context.totalCandidates - context.selectedItems, estimatedTokens: context.estimatedTokens }, timestamp: new Date().toISOString(), relatedFiles: context.files.map((file) => file.id) });
     await options.memory.addRelationship({ id: `edge:task-context:${taskId}`, from: `task:${taskId}`, to: `observation:${contextObservationId}`, relation: "HAS_CONTEXT", confidence: 1, source: "agent" });
@@ -50,8 +51,8 @@ export const createTaskPlanner = (options: PlannerOptions) => ({
       await options.memory.upsertTask({ id: taskId, request, status: "planned", createdAt });
       await options.memory.upsertTask({ id: taskId, request, status: "executing", createdAt });
       const executor = createPlanExecutor({ root: options.root, registry: options.registry ?? createBuiltinToolRegistry(), memory: options.memory, policy: options.policy });
-      const execution = await executor.executePlan(plan);
-      await options.memory.upsertTask({ id: taskId, request, status: "completed", createdAt, completedAt: new Date().toISOString() });
+      const execution = runOptions.executeReadSteps === false ? { events: [], evidence: [] } : await executor.executePlan(plan);
+      if (!runOptions.taskId) await options.memory.upsertTask({ id: taskId, request, status: "completed", createdAt, completedAt: new Date().toISOString() });
       return { taskId, context, plan, evidence: [...evidence, ...execution.evidence], events: execution.events, modelExecution };
     } catch (error) {
       await options.memory.upsertTask({ id: taskId, request, status: "failed", createdAt, completedAt: new Date().toISOString() });

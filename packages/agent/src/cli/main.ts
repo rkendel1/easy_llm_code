@@ -11,12 +11,18 @@ import { createContextEngine } from "../context/build-context.js";
 import { gitDiffTool } from "../tools/builtin/git-diff.js";
 import { detectVerificationCommands } from "../verification/policy.js";
 import { runVerification } from "../verification/runner.js";
-import { patchLineCounts } from "../mutation/patch.js";
+import { createTaskRunner } from "../task/runner.js";
+import type { TaskMode } from "../task/lifecycle.js";
+import { renderAgentEvent } from "../ux/renderer.js";
+import { createTerminalApproval } from "../ux/terminal.js";
+import { renderPerformanceSummary } from "../ux/summaries.js";
 
 const args = process.argv.slice(2);
 const rootArg = args.find((arg) => arg.startsWith("--root="));
 const mockMode = args.includes("--mock");
 const jsonMode = args.includes("--json");
+const configuredMode = args.find((arg) => arg.startsWith("--mode="))?.slice("--mode=".length) as TaskMode | undefined;
+if (configuredMode && !["ask", "plan", "edit", "auto"].includes(configuredMode)) throw new Error(`Invalid task mode: ${configuredMode}`);
 const invocationCwd = process.env.INIT_CWD ?? process.cwd();
 const root = resolve(invocationCwd, rootArg ? rootArg.slice("--root=".length) : process.cwd());
 
@@ -73,6 +79,32 @@ const main = async (): Promise<void> => {
     console.log(`✓ ${history.indexedCommits} new commits`);
   }
 
+  const executeLifecycle = async (request: string | undefined, mode: TaskMode, resumeId?: string): Promise<void> => {
+    const terminalApproval = createTerminalApproval();
+    const runner = createTaskRunner({
+      root, memory,
+      askLlm: mockMode ? async ({ request: task }) => ({ summary: `Mock analysis for: ${task}` }) : undefined,
+      plannerLlm: mockMode ? async ({ context }) => {
+        const selected = context.files.slice(0, 3), fallback = context.items[0]?.id ?? "none";
+        return { id: `plan:${Date.now()}`, taskId: "assigned", objective: request ?? "Resume task", assumptions: [],
+          steps: selected.map((file, index) => ({ id: `step-${index + 1}`, order: index + 1, action: "inspect", description: `Inspect ${file.path}`, target: file.path, dependencies: index ? [`step-${index}`] : [], evidence: [file.id] })),
+          risks: [{ id: "risk", description: "Existing behavior may be relied upon", severity: "medium", evidence: [selected[0]?.id ?? fallback] }], expectedFiles: selected.map((file) => file.path),
+          verification: [{ id: "verify", description: "Review relevant tests", evidence: [selected.at(-1)?.id ?? fallback] }] };
+      } : undefined,
+      approval: async (input) => input.mode === "auto" || args.includes("--yes") ? "approved" : terminalApproval(input)
+    });
+    runner.subscribe((event) => console.log(jsonMode ? JSON.stringify(event) : renderAgentEvent(event)));
+    const onInterrupt = (): void => runner.cancel(); process.once("SIGINT", onInterrupt);
+    try {
+      const result = resumeId ? await runner.resume(resumeId) : await runner.run({ request: request ?? "", mode });
+      if (!jsonMode) {
+        if (mode === "ask" && result.answer !== undefined) console.log(typeof result.answer === "string" ? result.answer : JSON.stringify(result.answer, null, 2));
+        if (mode === "plan" && result.plan) for (const step of result.plan.steps) console.log(`${step.order}. ${step.description}${step.target ? `\n   ${step.target}` : ""}`);
+        const models = await memory.getModelExecutions(result.taskId); if (result.outcome) console.log(renderPerformanceSummary({ model: models.at(-1), outcome: result.outcome, context: result.context?.metrics }));
+      }
+    } finally { process.removeListener("SIGINT", onInterrupt); }
+  };
+
   if (requestArg === "memory") { await printMemory(memory); return; }
   if (requestArg === "diff") {
     const result = await gitDiffTool.execute({}, { root }); console.log(result.diff || "No working-tree diff."); return;
@@ -84,11 +116,17 @@ const main = async (): Promise<void> => {
     if (!run.passed) process.exitCode = 1; return;
   }
   if (requestArg === "task" && positional[1]) {
-    const [task, outcome, plan, models, transactions, verifications] = await Promise.all([memory.getTask(positional[1]), memory.getTaskOutcome(positional[1]), memory.findPlanForTask(positional[1]), memory.getModelExecutions(positional[1]), memory.getMutationTransactions(positional[1]), memory.getVerificationRuns(positional[1])]);
-    const value = { task, outcome, plan, models, transactions, verifications }; if (jsonMode) console.log(JSON.stringify(value, null, 2));
+    const [task, outcome, plan, models, transactions, verifications, events] = await Promise.all([memory.getTask(positional[1]), memory.getTaskOutcome(positional[1]), memory.findPlanForTask(positional[1]), memory.getModelExecutions(positional[1]), memory.getMutationTransactions(positional[1]), memory.getVerificationRuns(positional[1]), memory.getTaskEvents(positional[1])]);
+    const value = { task, outcome, plan, models, transactions, verifications, events }; if (jsonMode) console.log(JSON.stringify(value, null, 2));
     else if (!task) console.log(`Task ${positional[1]} not found.`); else { const model = models.at(-1); console.log(`Task: ${task.task.request}\nStatus: ${(outcome?.status ?? task.task.status).toUpperCase()}\nModel\n  ${model?.provider ?? "unknown"}/${model?.model ?? "unknown"}${model?.estimatedCost !== undefined ? `\n  $${model.estimatedCost.toFixed(4)}` : ""}\nPlan\n  ${plan?.steps.length ?? 0} steps\nMutation\n  ${outcome?.filesChanged ?? 0} files\n  ${outcome?.linesChanged ?? 0} changed lines\n  ${transactions.at(-1)?.status ?? "none"}\nVerification\n  ${outcome?.verificationPassed ? "✓ passed" : "not passed"}\n  ${verifications.flatMap((run) => run.results).length} command(s)\nAttempts\n  ${outcome?.attempts ?? 0}\nDuration\n  ${outcome?.durationMs ?? 0}ms`); }
+    if (!jsonMode && events.length) { console.log("Timeline:"); for (const event of events) console.log(`  ${event.timestamp.slice(11, 19)} ${event.event.type}`); }
     return;
   }
+  if (requestArg === "tasks") {
+    const tasks = await memory.listTasks(); if (jsonMode) console.log(JSON.stringify(tasks, null, 2)); else { console.log("Recent tasks"); for (const task of tasks) { const outcome = await memory.getTaskOutcome(task.id); console.log(`${task.id.slice(0, 8)}  ${task.request.slice(0, 28).padEnd(28)}  ${outcome?.status === "success" ? "✓" : outcome?.status === "failure" ? "✗" : "…"}  ${outcome?.durationMs ? `${Math.round(outcome.durationMs / 1000)}s` : ""}`); } } return;
+  }
+  if (requestArg === "resume" && positional[1]) { await executeLifecycle(undefined, "edit", positional[1]); return; }
+  if (["ask", "plan", "edit", "auto"].includes(requestArg ?? "")) { const mode = requestArg as TaskMode, taskRequest = positional.slice(1).join(" "); if (!taskRequest) throw new Error(`Usage: llm-code ${mode} \"your request\"`); await executeLifecycle(taskRequest, mode); return; }
   if (requestArg === "context") {
     const request = positional.slice(1).join(" ");
     if (!request) throw new Error("Usage: llm-code context \"your question\"");
@@ -152,54 +190,8 @@ const main = async (): Promise<void> => {
     rl.close();
   }
 
-  const agent = createCodeAgent({
-    root,
-    memory,
-    llm: mockMode
-      ? async ({ task, context }) => ({
-          summary: `Mock analysis for: ${task}`,
-          relevantFiles: context.files.slice(0, 4).map((file) => ({
-            path: file.path,
-            reason: file.reason
-          })),
-          dependencies: context.relationships.slice(0, 4).map((edge) => ({
-            from: edge.from,
-            to: edge.to,
-            reason: edge.relation
-          })),
-          recommendedNextSteps: ["Run without --mock to use @easy-llm/llm"]
-        })
-      : undefined
-  });
-
   const mutationIntent = /^(add|change|create|delete|fix|implement|modify|refactor|remove|rename|update)\b/i.test(request ?? "");
-  if (mutationIntent && !mockMode) {
-    const planned = await agent.plan({ request: request ?? "" });
-    const proposal = await agent.proposeMutation(planned.plan, planned.context);
-    const counts = proposal.files.reduce((sum, file) => { const count = patchLineCounts(file.patch); return { additions: sum.additions + count.additions, deletions: sum.deletions + count.deletions }; }, { additions: 0, deletions: 0 });
-    if (!jsonMode) {
-      console.log(`✓ Context selected: ${planned.context.files.length} files\n✓ Plan created\n✓ Mutation proposed\nChanges`);
-      for (const file of proposal.files) console.log(` ${file.operation === "create" ? "A" : file.operation === "delete" ? "D" : "M"} ${file.path}`);
-      console.log(` +${counts.additions} / -${counts.deletions} lines\nWhy:\n  ${proposal.rationale}\nVerification:`);
-      for (const step of proposal.verification) console.log(`  ${step.command}`);
-    }
-    let approved = args.includes("--yes");
-    if (!approved) { const rl = createInterface({ input, output }); const answer = await rl.question("Apply these changes? [y/N] "); rl.close(); approved = /^y(?:es)?$/i.test(answer.trim()); }
-    if (!approved) { console.log("No files changed."); return; }
-    const result = await agent.applyMutation(proposal, planned.plan, true);
-    if (jsonMode) console.log(JSON.stringify(result, null, 2)); else console.log(result.outcome.status === "success" ? "Task complete." : "Task failed; changes rolled back.");
-    return;
-  }
-
-  console.log("Searching project memory...");
-  const result = await agent.run({ request: request ?? "" });
-
-  console.log("Relevant:");
-  for (const file of result.analysis.relevantFiles) {
-    console.log(`  ${file.path}`);
-  }
-  console.log("Analyzing...");
-  console.log(result.analysis.summary);
+  await executeLifecycle(request ?? "", configuredMode ?? (mutationIntent ? "edit" : "ask"));
 };
 
 void main();

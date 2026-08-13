@@ -7,6 +7,8 @@ import type { AgentTask, ChangeRecord, ContextBundle, ContextFile, ContextQuery,
 import type { AgentPlan, Evidence, ModelExecution, PlanStep, ToolRun } from "../planning/types.js";
 import type { FilePatch, MutationProposal, MutationTransaction, RepairAttempt, TaskOutcome } from "../mutation/types.js";
 import type { VerificationRun } from "../verification/types.js";
+import type { TaskCheckpoint } from "../task/checkpoint.js";
+import type { PersistedAgentEvent } from "../task/events.js";
 
 interface StoredObservation extends Observation { id: string; projectId: string }
 interface StoredChange extends FileChangeRecord { projectId: string }
@@ -55,6 +57,8 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
   const verificationRuns = db.collection<VerificationRun & { projectId: string }>("verification_runs");
   const repairAttempts = db.collection<RepairAttempt & { projectId: string }>("repair_attempts");
   const taskOutcomes = db.collection<TaskOutcome & { id: string; taskId: string; projectId: string }>("task_outcomes");
+  const taskCheckpoints = db.collection<TaskCheckpoint & { id: string; projectId: string }>("task_checkpoints");
+  const taskEvents = db.collection<PersistedAgentEvent & { projectId: string }>("task_events");
   let currentProjectId: string | undefined;
   const listeners = new Set<(event: ProjectChangeEvent) => void>();
 
@@ -97,6 +101,11 @@ export const createFeltDBProjectMemory = (options: MemoryOptions): ProjectMemory
       const found = await tasks.find({ id: taskId, projectId: projectId() }); if (!found[0]) return undefined;
       return { task: found[0], observations: await observations.find({ taskId, projectId: projectId() }) };
     },
+    async listTasks(limit = 20) { return (await tasks.find({ projectId: projectId() })).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit); },
+    async persistTaskCheckpoint(checkpoint) { await upsert(taskCheckpoints, { ...checkpoint, id: checkpoint.taskId, projectId: projectId() }); emit("task_checkpoint", [checkpoint.taskId]); },
+    async getTaskCheckpoint(taskId) { return (await taskCheckpoints.find({ id: taskId, projectId: projectId() }))[0]; },
+    async recordTaskEvent(event) { await upsert(taskEvents, { ...event, projectId: projectId() }); emit("task_event", [event.id]); },
+    async getTaskEvents(taskId) { return (await taskEvents.find({ taskId, projectId: projectId() })).sort((a, b) => a.sequence - b.sequence); },
     async ingestCommit(commit, commitChanges) {
       const id = projectId();
       await upsert(commits, { ...commit, projectId: id });
